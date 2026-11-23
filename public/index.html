@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Write · 角色对话</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar" aria-label="角色列表">
+      <div class="brand"><span class="mark" aria-hidden="true">W</span><div><strong>Write</strong><span>本地角色对话</span></div></div>
+      <div class="sidebar-heading"><h2>角色</h2><button id="create" type="button" class="small">＋ 新建</button></div>
+      <ul id="characters" class="characters"></ul>
+      <p class="sidebar-foot"><span aria-hidden="true"></span>Codex CLI · 本机运行</p>
+    </aside>
+
+    <main class="chat" aria-labelledby="title">
+      <header class="chat-header">
+        <div><h1 id="title">角色对话</h1><p id="subtitle">选择一个角色，或新建一个。</p></div>
+        <div id="role-actions" class="actions" hidden>
+          <button id="edit" type="button" class="small">编辑角色</button>
+          <button id="reset" type="button" class="small">新开会话</button>
+        </div>
+      </header>
+
+      <section id="transcript" class="transcript" aria-label="聊天记录"></section>
+
+      <footer class="composer">
+        <form id="send-form">
+          <label class="sr-only" for="message">消息</label>
+          <textarea id="message" name="message" rows="2" maxlength="8000" placeholder="输入消息…"></textarea>
+          <button id="send" type="submit" class="primary">发送</button>
+        </form>
+        <p id="status" class="status" role="status"></p>
+      </footer>
+    </main>
+  </div>
+
+  <dialog id="character-dialog" aria-labelledby="dialog-title">
+    <form id="profile-form">
+      <h2 id="dialog-title">新建角色</h2>
+      <label>角色名称 <input name="name" type="text" maxlength="50" required></label>
+      <label>角色设定 <textarea name="description" rows="5" maxlength="4000" required placeholder="这个角色是谁？会用怎样的语气说话？"></textarea></label>
+      <label>开场白（可选） <textarea name="greeting" rows="2" maxlength="1000"></textarea></label>
+      <p id="dialog-error" class="status error" role="alert"></p>
+      <div class="dialog-actions">
+        <button id="cancel" type="button">取消</button>
+        <button id="save" type="submit" class="primary">保存角色</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>
