@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { createRuntime } from '../server.js';
-import { contentType, delta, frame, readMockRequest, startOpenAIMock } from '../fixtures/mock-openai.mjs';
+import { contentType, delta, frame, readMockRequest, startOpenAIMock } from './fixtures/mock-openai.mjs';
 
 test('三个示范插件从白名单联动，模型断流不提交，停用回到默认槽位', async t => {
     let upstream;

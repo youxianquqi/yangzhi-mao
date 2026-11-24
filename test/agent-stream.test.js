@@ -14,7 +14,7 @@ const command = fixture => ({ file: process.execPath, prefix: [fileURLToPath(new
 
 test('Codex 增量只包含回答的新后缀；最终改写以权威回复为准', async () => {
     const deltas = [];
-    const run = message => runCodexStream({ ...input, command: command('../fixtures/fake-codex.mjs'), message, onDelta: text => deltas.push(text) });
+    const run = message => runCodexStream({ ...input, command: command('./fixtures/fake-codex.mjs'), message, onDelta: text => deltas.push(text) });
     const appendOnly = await run('流式成功');
     assert.deepEqual(deltas, ['第一段', '第二段']);
     assert.equal(appendOnly.reply, '第一段第二段');
@@ -27,7 +27,7 @@ test('Codex 增量只包含回答的新后缀；最终改写以权威回复为�
 test('Codex 在已有部分文本之后仍可失败；失败草稿不是最终回复', async () => {
     const deltas = [];
     await assert.rejects(runCodexStream({
-        ...input, command: command('../fixtures/fake-codex.mjs'), message: '流式失败',
+        ...input, command: command('./fixtures/fake-codex.mjs'), message: '流式失败',
         onDelta: text => deltas.push(text),
     }), { code: 'AGENT_UNAVAILABLE' });
     assert.deepEqual(deltas, ['第一段']);
@@ -35,7 +35,7 @@ test('Codex 在已有部分文本之后仍可失败；失败草稿不是最终�
 
 test('Antigravity 只转发严格权限下的 agent_response 片段', async () => {
     const deltas = [];
-    const run = message => runAgyStream({ ...input, command: command('../fixtures/fake-agy.mjs'), message, onDelta: text => deltas.push(text) });
+    const run = message => runAgyStream({ ...input, command: command('./fixtures/fake-agy.mjs'), message, onDelta: text => deltas.push(text) });
     const success = await run('流式成功');
     assert.deepEqual(deltas, ['第一段', '第二段']);
     assert.equal(success.reply, '第一段第二段');

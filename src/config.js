@@ -3,6 +3,7 @@
 import { extname, isAbsolute, resolve } from 'node:path';
 
 export const DEFAULT_CODEX_TIMEOUT_MS = 120_000;
+// Legacy records without a provider belong to the original Codex adapter.
 export const DEFAULT_PROVIDER = 'codex';
 
 export const LOOPBACK_HOST = '127.0.0.1';
@@ -10,14 +11,14 @@ export const JSON_BODY_LIMIT = '64kb';
 export const LIMITS = Object.freeze({
     nameLength: 50, descriptionLength: 4000, greetingLength: 1000,
     threadNameLength: 80, threadsPerCharacter: 24, messagePageSize: 60, messagePageMax: 100,
-    messageLength: 8000, replyLength: 32_000, sessionIdLength: 256, historyMessages: 200, turnMessages: 2,
+    messageLength: 8000, replyLength: 32_000, sessionIdLength: 256, historyMessages: 200, historyShardMessages: 64, turnMessages: 2,
     codexOutputBytes: 4 * 1024 * 1024,
 });
 
 const PORT_RANGE = { fallback: 3210, min: 1, max: 65_535 };
 const TIMEOUT_RANGE = { fallback: DEFAULT_CODEX_TIMEOUT_MS, min: 1000, max: 600_000 };
 
-/** @typedef {{port: number, dataDir: string, codexTimeoutMs: number, codexBin: string | undefined}} RuntimeConfig */
+/** @typedef {{port: number, dataDir: string, useCodex: boolean, codexTimeoutMs: number, codexBin: string | undefined}} RuntimeConfig */
 
 /**
  * @param {string} root Project directory; relative DATA_DIR values resolve here.
@@ -25,12 +26,13 @@ const TIMEOUT_RANGE = { fallback: DEFAULT_CODEX_TIMEOUT_MS, min: 1000, max: 600_
  * @returns {RuntimeConfig} Validated configuration or a startup error for invalid values.
  */
 export function readConfig(root, env = process.env) {
-    const codexBin = executableSetting(env, 'CODEX_BIN');
+    const useCodex = env.WRITE_AGENT === 'codex';
     return {
         port: integerSetting(env, 'PORT', PORT_RANGE),
         dataDir: resolve(root, env.DATA_DIR?.trim() || 'data'),
-        codexTimeoutMs: integerSetting(env, 'CODEX_TIMEOUT_MS', TIMEOUT_RANGE),
-        codexBin,
+        useCodex,
+        codexTimeoutMs: useCodex ? integerSetting(env, 'CODEX_TIMEOUT_MS', TIMEOUT_RANGE) : DEFAULT_CODEX_TIMEOUT_MS,
+        codexBin: useCodex ? executableSetting(env, 'CODEX_BIN') : undefined,
     };
 }
 

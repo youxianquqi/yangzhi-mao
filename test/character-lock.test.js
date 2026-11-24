@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { createCharacterLock } from '../src/character-lock.js';
 
-const fixture = fileURLToPath(new URL('../fixtures/hold-lock.mjs', import.meta.url));
+const fixture = fileURLToPath(new URL('./fixtures/hold-lock.mjs', import.meta.url));
 const busy = { code: 'CHARACTER_BUSY', status: 409 };
 const childTimeoutMs = 10_000;
 

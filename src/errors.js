@@ -17,7 +17,6 @@ const ERRORS = {
     THREAD_LIMIT: [409, '已达到该角色的剧情线数量上限。'],
     THREADS_UNAVAILABLE: [409, '当前存储服务不支持新增剧情线。'],
     REGENERATE_UNAVAILABLE: [409, '最后一条消息不是可重抽的回复。'],
-    HISTORY_LIMIT: [409, '该剧情线的聊天记录最多保存 ' + LIMITS.historyMessages + ' 条消息，请回退记录、重置会话或另开剧情线后继续。'],
     AGENT_INVALID_SESSION: [409, '存档中的 Agent 会话 ID 无效，请新开会话。'],
     AGENT_SESSION_NOT_FOUND: [409, 'Agent 找不到旧会话，请新开会话。'],
     PAYLOAD_TOO_LARGE: [413, '请求内容太长。'],

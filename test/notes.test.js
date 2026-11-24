@@ -92,31 +92,29 @@ test('读取旧笔记不重写角色；损坏的插件字段不拖垮核心角�
     assert.equal((await app.request(role)).status, 200);
 });
 
-test('历史容量在调用 Agent 前拦截，旧超额历史可读取并重置', async t => {
+test('旧超额历史无需迁移即可读取，下一次成功后归档且可重置', async t => {
     let calls = 0;
     const app = await setup(t, async () => { calls++; return offlineReply; }, false);
     const role = await app.create();
     const path = app.recordPath(role);
     const record = JSON.parse(await readFile(path, 'utf8'));
-    record.messages = makeMessages(LIMITS.historyMessages - LIMITS.turnMessages);
-    await writeFile(path, JSON.stringify(record), 'utf8');
-    const filled = await app.send(role);
-    assert.equal(filled.body.messages.length, LIMITS.historyMessages);
-    const full = await readFile(path, 'utf8');
-    const rejected = await app.send(role);
-    assert.equal(rejected.status, 409);
-    assert.equal(rejected.body.code, 'HISTORY_LIMIT');
-    assert.equal(calls, 1);
-    assert.equal(await readFile(path, 'utf8'), full);
-
     record.messages = makeMessages(LIMITS.historyMessages + 1);
-    await writeFile(path, JSON.stringify(record), 'utf8');
+    const untouched = JSON.stringify(record);
+    await writeFile(path, untouched, 'utf8');
     assert.equal((await app.request(role)).body.messages.length, LIMITS.historyMessages + 1);
-    assert.equal((await app.send(role)).body.code, 'HISTORY_LIMIT');
+    assert.equal(await readFile(path, 'utf8'), untouched);
+
+    const saved = await app.send(role);
+    assert.equal(saved.status, 200);
+    assert.ok(saved.body.messages.length <= LIMITS.historyMessages);
     assert.equal(calls, 1);
+    const disk = JSON.parse(await readFile(path, 'utf8'));
+    assert.equal(disk.archive.length, 1);
+    assert.equal(disk.archive[0].end + disk.messages.length, LIMITS.historyMessages + 1 + LIMITS.turnMessages);
     const reset = await app.request(role + '/session', 'DELETE');
     assert.deepEqual(reset.body.messages, []);
     assert.equal('notes' in reset.body, false);
+    assert.equal('archive' in JSON.parse(await readFile(path, 'utf8')), false);
     assert.equal((await app.send(role)).status, 200);
 });
 

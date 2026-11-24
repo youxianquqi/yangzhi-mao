@@ -12,7 +12,7 @@ import { runCodex } from '../src/agents/codex.js';
 import { appError } from '../src/errors.js';
 
 const profile = { name: '小写', description: '只调查书房，不替玩家行动。' };
-const fake = fileURLToPath(new URL('../fixtures/fake-codex.mjs', import.meta.url));
+const fake = fileURLToPath(new URL('./fixtures/fake-codex.mjs', import.meta.url));
 const firstSession = '71a595b0-8995-4ab2-9000-5a27d4c8dd95';
 const roleRoot = '/api/characters';
 

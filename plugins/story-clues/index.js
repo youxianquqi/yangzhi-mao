@@ -1,5 +1,4 @@
-// Keeps story memory outside character JSON and contributes it only on a new session.
-// Legacy notes are read-only until the user explicitly saves to the plugin namespace.
+// Notes are scoped to a timeline. The original role-level data belongs to its default timeline.
 import { appError } from '../../src/errors.js';
 
 /** @typedef {import('../../src/kernel.js').PluginContext} PluginContext */
@@ -11,7 +10,7 @@ export function apply(ctx, _config) {
     const notes = ctx.storage.namespace('story-clues');
 
     /** @param {string} id @returns {Promise<Notes>} */
-    async function readNotes(id) {
+    async function readRoleNotes(id) {
         const legacy = await ctx.migration.readCharacterField(id, 'notes');
         const saved = await notes.get(id);
         if (saved !== undefined) return normalizeNotes(saved, 'STORAGE_ERROR');
@@ -22,7 +21,14 @@ export function apply(ctx, _config) {
         }
     }
 
-    ctx.routes.register('GET', 'notes', ({ id }) => readNotes(id));
+    /** @param {string} id @returns {Promise<Notes>} */
+    async function readThreadNotes(id) {
+        const saved = await notes.get('thread-' + id);
+        return saved === undefined ? emptyNotes() : normalizeNotes(saved, 'STORAGE_ERROR');
+    }
+
+    // The legacy route is also the default timeline, whose ID equals the role ID.
+    ctx.routes.register('GET', 'notes', ({ id }) => readRoleNotes(id));
     ctx.routes.register('PUT', 'notes', async ({ id, body, signal }) => {
         const value = normalizeNotes(body);
         await ctx.migration.readCharacterField(id, 'notes'); // Validate that this local role still exists.
@@ -30,10 +36,16 @@ export function apply(ctx, _config) {
         await notes.set(id, value, signal);
         return value;
     });
+    ctx.routes.register('GET', 'thread-notes', ({ id }) => readThreadNotes(id));
+    ctx.routes.register('PUT', 'thread-notes', async ({ id, body, signal }) => {
+        const value = normalizeNotes(body);
+        await notes.set('thread-' + id, value, signal);
+        return value;
+    });
     ctx.ui.registerSlot('sidebar', { tag: 'story-clues-panel', entry: 'sidebar.js', style: 'sidebar.css' });
-    ctx.on('beforePrompt', async ({ characterId, sessionId, signal }) => {
-        if (sessionId !== null) return;
-        const value = await readNotes(characterId);
+    ctx.on('beforePrompt', async ({ characterId, threadId, sessionId, stateless, signal }) => {
+        if (!stateless && sessionId !== null) return;
+        const value = threadId && threadId !== characterId ? await readThreadNotes(threadId) : await readRoleNotes(characterId);
         signal?.throwIfAborted();
         if (value.clues.length || value.summary) return value;
     });

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { createRuntime } from '../server.js';
 import { runAgy } from '../plugins/agent-antigravity/agy.js';
 
-const fake = fileURLToPath(new URL('../fixtures/fake-agy.mjs', import.meta.url));
+const fake = fileURLToPath(new URL('./fixtures/fake-agy.mjs', import.meta.url));
 const codexSessionId = 'old-codex-session';
 const codexAgent = async input => ({ sessionId: codexSessionId, reply: 'Codex：' + input.message });
 const agyAgent = input => runAgy({ ...input, command: { file: process.execPath, prefix: [fake] } });

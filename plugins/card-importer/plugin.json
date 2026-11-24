@@ -1,0 +1,8 @@
+{
+  "id": "card-importer",
+  "name": "角色卡导入",
+  "version": "1.0.0",
+  "entry": "index.js",
+  "slots": ["toolbar"],
+  "permissions": ["ui"]
+}

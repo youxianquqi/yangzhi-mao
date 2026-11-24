@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import { runCodex } from '../src/agents/codex.js';
 import { createApp } from '../server.js';
 
-const fake = fileURLToPath(new URL('../fixtures/fake-codex.mjs', import.meta.url));
+const fake = fileURLToPath(new URL('./fixtures/fake-codex.mjs', import.meta.url));
 const cliAgent = options => runCodex({ ...options, command: { file: process.execPath, prefix: [fake] } });
 const profile = { name: '小写', description: '请记住用户交代的口令。', greeting: '你好！' };
 const quietLogger = { info() {}, warn() {}, error() {} };

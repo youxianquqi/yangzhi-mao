@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { LIMITS } from './config.js';
 import { createCharacterLock } from './character-lock.js';
 import { appError } from './errors.js';
-import { assertHistoryCapacity, normalizeCharacterId, normalizeThreadId } from './storage.js';
+import { archivedCount, shardIndex, timelineCount, timelineReader } from './history-archive.js';
+import { normalizeCharacterId, normalizeThreadId } from './storage.js';
 
 /** @typedef {import('./kernel.js').Kernel} Kernel */
 /** @typedef {import('./storage.js').CharacterRecord} CharacterRecord */
@@ -16,8 +17,11 @@ import { assertHistoryCapacity, normalizeCharacterId, normalizeThreadId } from '
 /** @typedef {import('./storage.js').Message} Message */
 /** @typedef {import('./agents/adapter.js').AgentRequest} AgentRequest */
 /** @typedef {import('./agents/adapter.js').AgentAdapter} AgentAdapter */
+/** @typedef {import('./agents/adapter.js').AgentService} AgentService */
+/** @typedef {import('./history-archive.js').ArchiveChanges} ArchiveChanges */
+/** @typedef {ReturnType<typeof timelineReader>} TimelineReader */
 /** @typedef {{signal?: AbortSignal, onStart: () => void, onDelta: (text: string) => void}} StreamOptions */
-/** @typedef {CharacterRecord & {threadId: string, threadName: string, revision: string}} ThreadView */
+/** @typedef {CharacterRecord & {threadId: string, threadName: string, revision: string, total: number}} ThreadView */
 /** @typedef {{id:string,name:string,updatedAt:string,messageCount:number}} ThreadSummary */
 /** @typedef {{messages:Message[],start:number,total:number,revision:string}} MessagePage */
 
@@ -32,7 +36,7 @@ export async function createChatService({ dataDir, kernel }) {
 
     /**
      * @param {string} id @param {string|undefined} threadId
-     * @param {(session:Conversation, role:CharacterRecord, threadId:string, agent:AgentAdapter) => unknown} change
+     * @param {(session:Conversation, role:CharacterRecord, threadId:string, agent:AgentService, history:TimelineReader, changes:ArchiveChanges) => unknown} change
      * @param {AbortSignal} [signal] @returns {Promise<ThreadView>}
      */
     async function update(id, threadId, change, signal) {
@@ -45,16 +49,20 @@ export async function createChatService({ dataDir, kernel }) {
         const release = await locks.acquire(threadKey);
         try {
             const role = await store.characters.get(key);
-            const { id: provider, run } = kernel.inject('agent');
-            const record = selectAgent(structuredClone(await loadThread(store, role, threadKey)), provider);
+            const agent = kernel.inject('agent');
+            const record = selectAgent(structuredClone(await loadThread(store, role, threadKey)), agent.id);
+            const history = timelineReader(store.archive, { roleId: key, threadId: threadKey, provider: agent.id }, record);
+            /** @type {ArchiveChanges} */
+            const changes = {};
             assertConnected(signal);
-            await change(record, role, threadKey, run);
+            await change(record, role, threadKey, agent, history, changes);
             assertConnected(signal);
             record.updatedAt = new Date().toISOString();
             record.revisionId = randomUUID();
-            if (threadKey === key) await store.characters.save(/** @type {CharacterRecord} */ (record), signal);
-            else await store.threads.save(key, /** @type {ThreadRecord} */ (record), signal);
-            return threadView(role, record, threadKey);
+            const saved = threadKey === key
+                ? await store.characters.save(/** @type {CharacterRecord} */ (record), signal, changes)
+                : await store.threads.save(key, /** @type {ThreadRecord} */ (record), signal, changes);
+            return threadView(role, saved || record, threadKey);
         } finally {
             await release();
         }
@@ -67,14 +75,16 @@ export async function createChatService({ dataDir, kernel }) {
     async function send(id, threadId, body, signal, stream, replace = false) {
         const fields = recordInput(body);
         const inputText = replace ? '' : field(fields.message, '消息', LIMITS.messageLength, true);
-        const record = await update(id, threadId, async (session, role, threadKey, agent) => {
+        const record = await update(id, threadId, async (session, role, threadKey, agent, history, changes) => {
             checkRevision(session, fields.revision, replace);
             let message = inputText;
-            if (replace) message = rewindForRegeneration(session);
-            assertHistoryCapacity(session.messages.length + LIMITS.turnMessages);
+            if (replace) message = await rewindForRegeneration(session, history, changes);
             const { id: characterId, name, description, greeting } = role;
             const { sessionId } = session;
-            const env = { characterId, threadId: threadKey, character: { name, description, greeting }, message, sessionId, signal };
+            const env = {
+                characterId, threadId: threadKey, character: { name, description, greeting }, message, sessionId, signal,
+                stateless: agent.stateless === true,
+            };
 
             stream?.onStart();
             const context = await kernel.collectContext(env);
@@ -82,9 +92,9 @@ export async function createChatService({ dataDir, kernel }) {
             /** @type {AgentRequest} */
             const input = {
                 cwd, character: env.character, message, sessionId, signal,
-                history: structuredClone(session.messages), context,
+                history: structuredClone(session.messages.slice(-LIMITS.historyMessages)), context,
             };
-            const result = await runTurn(agent, input, stream && (text => {
+            const result = await runTurn(agent.run, input, stream && (text => {
                 stream.onDelta(text);
                 void kernel.emit('onDelta', { characterId, threadId: threadKey, text });
             }));
@@ -97,18 +107,28 @@ export async function createChatService({ dataDir, kernel }) {
         return record;
     }
 
-    /** @param {string} id @param {string} [threadId] @returns {Promise<ThreadView>} */
-    async function get(id, threadId) {
+    /** @param {string} id @param {string} [threadId] */
+    async function snapshot(id, threadId) {
         const store = kernel.inject('storage');
         const role = await store.characters.get(normalizeCharacterId(id));
         const key = threadId === undefined ? await firstThreadId(store, role) : normalizeThreadId(threadId);
-        const record = selectAgent(structuredClone(await loadThread(store, role, key)), kernel.inject('agent').id);
+        const loaded = await loadThread(store, role, key);
+        const provider = kernel.inject('agent').id;
+        const record = provider === loaded.provider ? loaded : selectAgent(structuredClone(loaded), provider);
+        return { role, key, record, store };
+    }
+
+    /** @param {string} id @param {string} [threadId] @returns {Promise<ThreadView>} */
+    async function get(id, threadId) {
+        const { role, key, record } = await snapshot(id, threadId);
         return threadView(role, record, key);
     }
 
     /** @param {string} id @param {string} [threadId] @param {AbortSignal} [signal] */
     async function reset(id, threadId, signal) {
-        const record = await update(id, threadId, session => {
+        const record = await update(id, threadId, (session, _role, _thread, _agent, _history, changes) => {
+            changes.prune = !!session.archive?.length;
+            delete session.archive;
             session.messages = [];
             session.sessionId = null;
         }, signal);
@@ -210,22 +230,32 @@ export async function createChatService({ dataDir, kernel }) {
                         const current = await store.characters.get(role.id);
                         // Keep the profile and unknown legacy data while retiring the old default forever.
                         await store.characters.save({
-                            ...current, defaultThreadDeleted: true, sessionId: null, messages: [], inactiveSessions: {},
+                            ...current, defaultThreadDeleted: true, sessionId: null, messages: [], archive: undefined, inactiveSessions: {},
                             revisionId: randomUUID(), updatedAt: new Date().toISOString(),
-                        });
+                        }, undefined, { prune: true });
                     }
                 } finally { await release(); }
             });
         },
         /** @param {string} id @param {string} threadId @param {{before?:unknown,limit?:unknown}} opts @returns {Promise<MessagePage>} */
         messagePage: async (id, threadId, opts = {}) => {
-            const record = await get(id, threadId);
-            const total = record.messages.length;
             const limit = opts.limit === undefined ? LIMITS.messagePageSize : unsigned(opts.limit, '分页条数');
             if (limit < 1 || limit > LIMITS.messagePageMax) throw appError('INVALID_INPUT');
-            const end = opts.before === undefined ? total : Math.min(total, unsigned(opts.before, '分页位置'));
-            const start = Math.max(0, end - limit);
-            return { messages: record.messages.slice(start, end), start, total, revision: record.revision };
+            const before = opts.before === undefined ? undefined : unsigned(opts.before, '分页位置');
+            let missingRevision;
+            for (let attempt = 0; attempt < 2; attempt++) {
+                const { role, key, record, store } = await snapshot(id, threadId);
+                const total = timelineCount(record);
+                const end = Math.min(total, before ?? total);
+                const start = Math.max(0, end - limit);
+                const revision = threadRevision(record);
+                if (missingRevision === revision) throw appError('STORAGE_ERROR');
+                const history = timelineReader(store.archive, { roleId: role.id, threadId: key, provider: record.provider }, record);
+                const messages = await history.range(start, end);
+                if (messages) return { messages, start, total, revision };
+                missingRevision = revision;
+            }
+            throw appError('THREAD_CHANGED');
         },
         /** @param {string} id @param {unknown} body @param {AbortSignal} [signal] */
         sendMessage: (id, body, signal) => send(id, undefined, body, signal),
@@ -234,18 +264,32 @@ export async function createChatService({ dataDir, kernel }) {
         /** @param {string} id @param {string} threadId @param {unknown} body @param {AbortSignal} [signal] @param {StreamOptions} [stream] */
         sendThreadMessage: (id, threadId, body, signal, stream) => send(id, threadId, body, signal, stream),
         /** @param {string} id @param {string} threadId @param {unknown} index @param {unknown} body @param {AbortSignal} [signal] */
-        editMessage: (id, threadId, index, body, signal) => update(id, threadId, session => {
+        editMessage: (id, threadId, index, body, signal) => update(id, threadId, async (session, _role, _thread, _agent, history, changes) => {
             const fields = recordInput(body);
             checkRevision(session, fields.revision);
-            const current = session.messages[messageIndex(session, index)];
-            const max = current.role === 'user' ? LIMITS.messageLength : LIMITS.replyLength;
-            current.text = field(fields.text, '消息', max, true);
+            const ordinal = messageIndex(session, index);
+            const archived = archivedCount(session);
+            if (ordinal >= archived) {
+                const current = session.messages[ordinal - archived];
+                current.text = editedText(current, fields.text);
+            } else {
+                const refs = session.archive ?? [];
+                const shard = shardIndex(refs, ordinal);
+                const messages = await history.readShard(shard);
+                if (!messages) throw appError('STORAGE_ERROR');
+                const offset = ordinal - (refs[shard - 1]?.end ?? 0);
+                const current = messages[offset];
+                changes.replace = {
+                    id: refs[shard].id,
+                    messages: messages.map((message, number) => number === offset ? { ...current, text: editedText(current, fields.text) } : message),
+                };
+            }
             session.sessionId = null;
         }, signal),
         /** @param {string} id @param {string} threadId @param {unknown} index @param {unknown} revision @param {AbortSignal} [signal] */
-        truncateMessages: (id, threadId, index, revision, signal) => update(id, threadId, session => {
+        truncateMessages: (id, threadId, index, revision, signal) => update(id, threadId, async (session, _role, _thread, _agent, history, changes) => {
             checkRevision(session, revision);
-            session.messages.length = messageIndex(session, index);
+            await keepPrefix(session, messageIndex(session, index), history, changes);
             session.sessionId = null;
         }, signal),
         /** @param {string} id @param {string} threadId @param {unknown} body @param {AbortSignal} [signal] @param {StreamOptions} [stream] */
@@ -283,26 +327,27 @@ function threadView(role, record, threadId) {
     return {
         id: role.id, name: role.name, description: role.description, greeting: role.greeting,
         threadId, threadName: threadId === role.id ? defaultThreadName : record.name,
-        provider, messages, sessionId, inactiveSessions, updatedAt, revision: threadRevision(record),
+        provider, messages, sessionId, inactiveSessions, updatedAt, revision: threadRevision(record), total: timelineCount(record),
     };
 }
 
 /** @param {CharacterRecord|ThreadRecord} record @param {string} provider @param {string} name @returns {ThreadSummary} */
 function summarizeThread(record, provider, name) {
-    const messages = record.provider === provider ? record.messages
-        : (Object.hasOwn(record.inactiveSessions, provider) ? record.inactiveSessions[provider]?.messages : []);
-    return { id: record.id, name, updatedAt: record.updatedAt, messageCount: messages?.length ?? 0 };
+    const session = record.provider === provider ? record
+        : (Object.hasOwn(record.inactiveSessions, provider) ? record.inactiveSessions[provider] : undefined);
+    return { id: record.id, name, updatedAt: record.updatedAt, messageCount: session ? timelineCount(session) : 0 };
 }
 
 /** @template {Conversation} T @param {T} record @param {string} provider @returns {T} */
 function selectAgent(record, provider) {
     if (provider === record.provider) return record;
     const previous = Object.hasOwn(record.inactiveSessions, provider) ? record.inactiveSessions[provider] : undefined;
-    record.inactiveSessions[record.provider] = { sessionId: record.sessionId, messages: record.messages };
+    record.inactiveSessions[record.provider] = { sessionId: record.sessionId, messages: record.messages, archive: record.archive };
     delete record.inactiveSessions[provider];
     record.provider = provider;
     record.sessionId = previous?.sessionId ?? null;
     record.messages = previous?.messages ?? [];
+    record.archive = previous?.archive;
     return record;
 }
 
@@ -324,7 +369,7 @@ function checkRevision(session, expected, required = true) {
 /** @param {Conversation} session @param {unknown} value */
 function messageIndex(session, value) {
     const index = unsigned(value, '消息位置');
-    if (index >= session.messages.length) throw appError('MESSAGE_NOT_FOUND');
+    if (index >= timelineCount(session)) throw appError('MESSAGE_NOT_FOUND');
     return index;
 }
 
@@ -338,14 +383,45 @@ function unsigned(value, label) {
     return result;
 }
 
-/** @param {Conversation} session */
-function rewindForRegeneration(session) {
-    const last = session.messages.at(-1);
-    const previous = session.messages.at(-2);
+/**
+ * When truncation reaches the archive, reconstruct only a bounded tail of the
+ * retained prefix; old referenced shards stay immutable until main commit.
+ * @param {Conversation} session @param {number} length @param {TimelineReader} history @param {ArchiveChanges} changes
+ */
+async function keepPrefix(session, length, history, changes) {
+    const archived = archivedCount(session);
+    if (!archived || length > archived) {
+        session.messages.length = length - archived;
+        return;
+    }
+    const refs = session.archive;
+    const tail = LIMITS.historyMessages - LIMITS.historyShardMessages;
+    const keep = shardIndex(refs, Math.max(0, length - tail));
+    const start = refs[keep - 1]?.end ?? 0;
+    const messages = await history.range(start, length);
+    if (!messages) throw appError('STORAGE_ERROR');
+    session.archive = refs.slice(0, keep);
+    session.messages = messages;
+    changes.prune = true;
+}
+
+/** @param {Message} message @param {unknown} value */
+function editedText(message, value) {
+    return field(value, '消息', message.role === 'user' ? LIMITS.messageLength : LIMITS.replyLength, true);
+}
+
+/** @param {Conversation} session @param {TimelineReader} history @param {ArchiveChanges} changes */
+async function rewindForRegeneration(session, history, changes) {
+    const total = timelineCount(session);
+    const start = total - LIMITS.turnMessages;
+    if (start < 0) throw appError('REGENERATE_UNAVAILABLE');
+    const messages = await history.range(start, total);
+    if (!messages) throw appError('STORAGE_ERROR');
+    const [previous, last] = messages;
     if (last?.role !== 'assistant' || previous?.role !== 'user' || !previous.text.trim()
         || previous.text.length > LIMITS.messageLength) throw appError('REGENERATE_UNAVAILABLE');
     // This is only a private snapshot: an incomplete regenerate never deletes the old turn.
-    session.messages.length -= LIMITS.turnMessages;
+    await keepPrefix(session, start, history, changes);
     session.sessionId = null;
     return previous.text;
 }

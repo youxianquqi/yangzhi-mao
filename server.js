@@ -9,7 +9,8 @@ import { createChatService } from './src/chat.js';
 import { DEFAULT_PROVIDER, JSON_BODY_LIMIT, LIMITS, LOOPBACK_HOST, readConfig } from './src/config.js';
 import { AppError, appError } from './src/errors.js';
 import { createKernel } from './src/kernel.js';
-import { loadEnabledPlugins } from './src/plugin-loader.js';
+import { createModelSettings } from './src/model-settings.js';
+import { createPluginManager } from './src/plugin-loader.js';
 import { createStorageService, normalizeCharacterId } from './src/storage.js';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
@@ -27,12 +28,13 @@ const streamContentType = 'text/event-stream; charset=utf-8';
 const contentSecurityPolicy = "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
 
 /** @typedef {import('./src/agents/adapter.js').AgentAdapter} AgentAdapter */
+/** @typedef {import('./src/agents/adapter.js').AgentService} AgentService */
 /** @typedef {import('./src/storage.js').CharacterRecord} CharacterRecord */
 /** @typedef {import('./src/storage.js').StorageService} StorageService */
 /** @typedef {import('./src/chat.js').ThreadView} ThreadView */
 /** @typedef {import('./src/chat.js').StreamOptions} StreamOptions */
 /** @typedef {{params:Record<string,string>,query:Record<string,unknown>,body:unknown}} TurnRequest */
-/** @typedef {{dataDir?: string, pluginsDir?: string, agent?: AgentAdapter, storage?: StorageService, logger?: Pick<Console,'error'>}} AppOptions */
+/** @typedef {{dataDir?: string, pluginsDir?: string, agent?: AgentAdapter, storage?: StorageService, logger?: Pick<Console,'error'>, env?: NodeJS.ProcessEnv, modelFetch?: typeof fetch}} AppOptions */
 
 /** @param {AppOptions} [options] Standalone application without a listening socket. */
 export async function createApp(options) {
@@ -41,13 +43,28 @@ export async function createApp(options) {
 
 /** @param {AppOptions} [options] Application and kernel for controlled local lifecycle operations. */
 export async function createRuntime({
-    dataDir = join(root, 'data'), pluginsDir = join(root, 'plugins'), agent = createCodexAdapter(), storage, logger = console,
+    dataDir = join(root, 'data'), pluginsDir = join(root, 'plugins'), agent, storage, logger = console, env = process.env, modelFetch,
 } = {}) {
     /** @type {import('./src/kernel.js').PluginLog} */
     const log = detail => logger.error(JSON.stringify({ timestamp: new Date().toISOString(), ...detail }));
-    const kernel = createKernel({ storage: storage ?? await createStorageService(dataDir), agent: { id: DEFAULT_PROVIDER, run: agent }, log });
+    const models = await createModelSettings(dataDir, { env, fetcher: modelFetch });
+    /** @type {AgentService | undefined} */
+    const explicitAgent = agent && { id: DEFAULT_PROVIDER, run: agent };
+    const kernel = createKernel({ storage: storage ?? await createStorageService(dataDir), agent: explicitAgent ?? models.getAgent(), log });
     const chat = await createChatService({ dataDir, kernel });
-    await loadEnabledPlugins(kernel, { dataDir, pluginsDir, log });
+    const plugins = createPluginManager(kernel, { dataDir, pluginsDir, log, safeMode: env.SAFE_MODE === '1' });
+    await plugins.load();
+
+    async function settingsView() {
+        const model = models.describe();
+        const current = kernel.inject('agent');
+        const activeAgent = current.id;
+        return {
+            safeMode: plugins.safeMode, model, activeAgent,
+            modelAvailable: current !== models.getAgent() || model.configured,
+            plugins: await plugins.list(),
+        };
+    }
 
     const app = express();
     app.disable('x-powered-by');
@@ -55,6 +72,24 @@ export async function createRuntime({
     app.use(apiRoot, requireJson, express.json({ limit: JSON_BODY_LIMIT }));
     app.get(apiRoot + '/health', (_req, res) => res.json({ status: 'ok', agent: kernel.inject('agent').id }));
     app.get(apiRoot + '/plugins/ui', (_req, res) => res.json(kernel.getSlots()));
+    app.get(apiRoot + '/plugins/ui/defaults', (_req, res) => res.json(kernel.getDefaultUi()));
+    const settings = apiRoot + '/settings';
+    app.use(settings, localSettingsOnly);
+    app.get(settings, async (_req, res) => res.json(await settingsView()));
+    app.put(settings + '/model', async (req, res) => withRequestAbort(req, res, async ({ signal }) => {
+        await models.save(req.body, signal);
+        if (!explicitAgent) kernel.setDefaultAgent(models.getAgent());
+        if (!signal.aborted) res.json(await settingsView());
+    }));
+    app.post(settings + '/model/test', async (req, res) => withRequestAbort(req, res, async ({ signal }) => {
+        const result = await models.testConnection(req.body, signal);
+        if (!signal.aborted) res.json(result);
+    }));
+    app.put(settings + '/plugins/:id', async (req, res) => {
+        if (typeof req.body?.enabled !== 'boolean') throw appError('INVALID_INPUT');
+        await plugins.setEnabled(req.params.id, req.body.enabled);
+        res.json(await settingsView());
+    });
     registerCharacterRoutes(app, chat, logger);
     registerThreadRoutes(app, chat, logger);
     app.all(apiRoot + '/plugins/:pluginId/:resource/:id', async (req, res) => withRequestAbort(req, res, async controller => {
@@ -139,7 +174,7 @@ function threadView(record, includeMessages) {
     const { messages, ...profile } = activeCharacter(record);
     return {
         ...profile, threadId: record.threadId, threadName: record.threadName, revision: record.revision,
-        messageCount: messages.length, ...(includeMessages ? { messages } : {}),
+        messageCount: record.total, ...(includeMessages ? { messages } : {}),
     };
 }
 
@@ -157,10 +192,10 @@ function streamHandler(run, logger, messageCount = LIMITS.turnMessages, includeT
                 onDelta: text => writeDelta(res, controller, text),
             });
             if (signal.aborted || res.destroyed) return;
-            const { sessionId, messages, updatedAt, provider, threadId, revision } = record;
+            const { sessionId, messages, updatedAt, provider, threadId, revision, total } = record;
             res.end(eventFrame('done', {
                 sessionId, messages: messages.slice(-messageCount), updatedAt, provider,
-                ...(includeThread ? { threadId, revision, total: messages.length } : {}),
+                ...(includeThread ? { threadId, revision, total } : {}),
             }));
         } catch (error) {
             if (signal.aborted || res.destroyed) return;
@@ -238,6 +273,15 @@ function localRequest(req) {
         && (!origin || origin === 'http://' + host);
 }
 
+function localSettingsOnly(req, _res, next) {
+    const port = req.socket.localPort;
+    const host = LOOPBACK_HOST + (port === 80 ? '' : ':' + port);
+    const site = req.get('sec-fetch-site');
+    if (req.socket.remoteAddress !== LOOPBACK_HOST || req.get('host') !== host
+        || (site && site !== 'same-origin' && site !== 'none')) return next(appError('LOCAL_ONLY'));
+    next();
+}
+
 function requireJson(req, res, next) {
     res.set('Cache-Control', cacheControl);
     if (jsonMethods.has(req.method) && !req.is(jsonContentType)) return next(appError('UNSUPPORTED_MEDIA_TYPE'));
@@ -273,12 +317,15 @@ function errorPayload(error, req, res, logger) {
     return { error: message, code, requestId, status };
 }
 
-async function start() {
+/** @param {(url:string) => void} [onReady] Called after the loopback socket has bound. */
+export async function start(onReady) {
     const config = readConfig(root);
-    const agent = createCodexAdapter({ bin: config.codexBin, timeoutMs: config.codexTimeoutMs });
+    const agent = config.useCodex ? createCodexAdapter({ bin: config.codexBin, timeoutMs: config.codexTimeoutMs }) : undefined;
     const { app, kernel } = await createRuntime({ dataDir: config.dataDir, agent });
     const server = app.listen(config.port, LOOPBACK_HOST, () => {
-        console.log('Write 已启动：http://' + LOOPBACK_HOST + ':' + config.port);
+        const url = 'http://' + LOOPBACK_HOST + ':' + config.port;
+        console.log('Write 已启动：' + url);
+        onReady?.(url);
     });
     function shutdown() {
         server.close();
@@ -304,7 +351,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     try {
         await start();
     } catch (error) {
-        console.error('Write 无法启动：' + error.message);
+        console.error(error instanceof AppError ? 'Write 无法启动：' + error.message : 'Write 无法启动，请检查本机环境及设置。');
         process.exitCode = 1;
     }
 }

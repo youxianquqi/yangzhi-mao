@@ -7,7 +7,10 @@ import { AppError, appError } from './errors.js';
 const idPattern = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const assetPattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}\.(?:m?js|css)$/;
 const permissions = /** @type {const} */ (['storage', 'migrate', 'hooks', 'routes', 'ui', 'provide:agent', 'provide:storage']);
-const slots = /** @type {const} */ (['sidebar', 'message-actions']);
+const serviceSlots = /** @type {const} */ (['agent', 'storage']);
+const defaultUiSlots = /** @type {const} */ (['character-sidebar', 'thread-selector', 'main-view']);
+const slots = /** @type {const} */ (['sidebar', 'message-actions', 'toolbar', ...defaultUiSlots]);
+const overrideSlots = /** @type {const} */ ([...serviceSlots, ...defaultUiSlots]);
 
 const methods = /** @type {const} */ (['GET', 'POST', 'PUT', 'DELETE']);
 const events = /** @type {const} */ (['beforePrompt', 'onDelta', 'afterTurn', 'onSessionReset']);
@@ -23,19 +26,21 @@ const routeTimeoutMs = 10_000;
 /** @typedef {ReturnType<typeof createKernel>} Kernel */
 /** @typedef {import('./storage.js').StorageService} StorageService */
 /** @typedef {import('./storage.js').NamespaceStore} NamespaceStore */
-/** @typedef {import('./agents/adapter.js').AgentAdapter} AgentAdapter */
-/** @typedef {{id:string,run:AgentAdapter}} AgentService */
+/** @typedef {import('./agents/adapter.js').AgentService} AgentService */
 /** @typedef {{agent: AgentService, storage: StorageService}} Services */
 /** @typedef {typeof permissions[number]} Permission */
 /** @typedef {typeof slots[number]} SlotName */
+/** @typedef {typeof defaultUiSlots[number]} DefaultUiSlot */
+/** @typedef {typeof overrideSlots[number]} OverrideSlot */
+/** @typedef {{slot:DefaultUiSlot,pluginId:string,action:'override'|'hide'}} DefaultUiClaim */
 /** @typedef {typeof methods[number]} RouteMethod */
-/** @typedef {{id:string,name:string,version:string,entry:string,slots:SlotName[],permissions:Permission[]}} PluginManifest */
+/** @typedef {{id:string,name:string,version:string,entry:string,slots:SlotName[],permissions:Permission[],overrides?:OverrideSlot[],hides?:DefaultUiSlot[]}} PluginManifest */
 /** @typedef {{tag:string,entry:string,style?:string}} SlotDescriptor */
 /** @typedef {SlotDescriptor & {pluginId:string,slot:SlotName}} PublicSlot */
-/** @typedef {{event:'plugin_failed',phase:string,code:string,pluginId?:string}} PluginDiagnostic */
+/** @typedef {{event:'plugin_failed',phase:string,code:string,pluginId?:string} | {event:'plugin_conflict',phase:'slot',code:'SLOT_CONFLICT',slot:OverrideSlot,pluginId:string,previousPluginId:string}} PluginDiagnostic */
 /** @typedef {(entry: PluginDiagnostic) => void} PluginLog */
 /** @typedef {{characterId:string,threadId?:string,sessionId:string|null}} SessionEvent */
-/** @typedef {SessionEvent & {character:Readonly<import('./agents/adapter.js').CharacterProfile>,message:string,signal?:AbortSignal}} HookContext */
+/** @typedef {SessionEvent & {character:Readonly<import('./agents/adapter.js').CharacterProfile>,message:string,stateless?:boolean,signal?:AbortSignal}} HookContext */
 /** @typedef {{beforePrompt:HookContext, onDelta:{characterId:string,threadId?:string,text:string}, afterTurn:SessionEvent,onSessionReset:SessionEvent}} PluginEvents */
 /** @typedef {{pluginId:string,data:JsonValue}} PromptContribution */
 /** @typedef {{id:string,body:unknown,signal:AbortSignal}} PluginRequest */
@@ -116,7 +121,23 @@ export function createKernel({ storage, agent, log = () => {} }) {
                 }
             }
             if (scope.controller.signal.aborted) return false;
+            for (const slot of safe.overrides ?? []) {
+                if (isDefaultUiSlot(slot)) {
+                    if (![...scope.ui.values()].some(item => item.slot === slot)) throw new Error('Missing declared UI replacement');
+                } else if (scope.services[slot] === undefined) {
+                    throw new Error('Missing declared service replacement');
+                }
+            }
             scope.active = true;
+            for (const slot of overrideSlots) {
+                const owners = [...scopes.values()].filter(candidate => candidate.active && claims(candidate, slot));
+                if (owners.length < 2 || !owners.includes(scope)) continue;
+                const [previous, winner] = owners.slice(-2);
+                try {
+                    log({ event: 'plugin_conflict', phase: 'slot', code: 'SLOT_CONFLICT',
+                        slot, pluginId: winner.manifest.id, previousPluginId: previous.manifest.id });
+                } catch { /* Logging is not an app dependency. */ }
+            }
             return true;
         } catch {
             diagnose(log, 'initialize', 'APPLY_FAILED', safe.id);
@@ -147,6 +168,17 @@ export function createKernel({ storage, agent, log = () => {} }) {
         const owner = providers.find(scope => scope.active && scope.services[name] !== undefined);
         const override = /** @type {Services[K]|undefined} */ (owner?.services[name]);
         return override ?? defaults[name];
+    }
+
+    /** Replaces the host fallback for future requests, independently of plugin scopes. @param {AgentService} next */
+    function setDefaultAgent(next) {
+        if (!validService('agent', next)) throw new TypeError('Invalid default Agent service');
+        defaults.agent = next;
+    }
+
+    /** @param {string} id */
+    function isActive(id) {
+        return scopes.get(id)?.active === true;
     }
 
     /** @param {HookContext} payload @returns {Promise<PromptContribution[]>} */
@@ -203,9 +235,22 @@ export function createKernel({ storage, agent, log = () => {} }) {
             })));
     }
 
+    /** @returns {DefaultUiClaim[]} */
+    function getDefaultUi() {
+        const active = [...scopes.values()].reverse().filter(scope => scope.active);
+        return defaultUiSlots.flatMap(slot => {
+            const owner = active.find(scope => claims(scope, slot));
+            if (!owner) return [];
+            return [{ slot, pluginId: owner.manifest.id, action: owner.manifest.hides?.includes(slot) ? 'hide' : 'override' }];
+        });
+    }
+
     /** @returns {PublicSlot[]} */
     function getSlots() {
+        const replacements = new Map(getDefaultUi().filter(claim => claim.action === 'override')
+            .map(claim => [claim.slot, claim.pluginId]));
         return [...scopes].flatMap(([pluginId, scope]) => !scope.active || !scope.root ? [] : [...scope.ui.values()]
+            .filter(({ slot }) => !isDefaultUiSlot(slot) || replacements.get(slot) === pluginId)
             .map(({ slot, descriptor }) => {
                 const prefix = '/plugin-assets/' + pluginId + '/';
                 return {
@@ -248,19 +293,45 @@ export function createKernel({ storage, agent, log = () => {} }) {
         }
     }
 
-    return { register, unregister, dispose, inject, collectContext, emit, getSlots, asset, dispatchRoute };
+    return { register, unregister, dispose, inject, setDefaultAgent, isActive, collectContext, emit, getDefaultUi, getSlots, asset, dispatchRoute };
 }
 
 /** @param {unknown} value @returns {PluginManifest | undefined} */
 export function parsePluginManifest(value) {
     if (!isObject(value)) return undefined;
-    const { id, name, version, entry } = value;
+    const { id, name, version, entry, slots: declaredSlots, permissions: declaredPermissions } = value;
     if (!isPluginId(id) || typeof name !== 'string' || !name.trim() || name.length > 80
         || typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[\da-z.-]+)?(?:\+[\da-z.-]+)?$/i.test(version) || version.length > 40
-        || !isAsset(entry, 'js') || !uniqueMembers(value.slots, slots) || !uniqueMembers(value.permissions, permissions)) {
+        || !isAsset(entry, 'js') || !uniqueMembers(declaredSlots, slots) || !uniqueMembers(declaredPermissions, permissions)) {
         return undefined;
     }
-    return { id, name, version, entry, slots: [...value.slots], permissions: [...value.permissions] };
+    const overrides = value.overrides === undefined ? [] : value.overrides;
+    const hides = value.hides === undefined ? [] : value.hides;
+    if (!uniqueMembers(overrides, overrideSlots) || !uniqueMembers(hides, defaultUiSlots)
+        || hides.some(slot => overrides.includes(slot))
+        || overrides.some(slot => isDefaultUiSlot(slot)
+            ? !declaredSlots.includes(slot) || !declaredPermissions.includes('ui')
+            : !declaredPermissions.includes(servicePermission(slot)))
+        || (hides.length && !declaredPermissions.includes('ui'))
+        || defaultUiSlots.some(slot => declaredSlots.includes(slot) && !overrides.includes(slot))) return undefined;
+    return { id, name, version, entry, slots: [...declaredSlots], permissions: [...declaredPermissions],
+        overrides: [...overrides], hides: [...hides] };
+}
+
+/** @param {string} slot @returns {slot is DefaultUiSlot} */
+function isDefaultUiSlot(slot) {
+    return defaultUiSlots.some(candidate => candidate === slot);
+}
+
+/** @param {keyof Services} name @returns {Permission} */
+function servicePermission(name) {
+    return name === 'agent' ? 'provide:agent' : 'provide:storage';
+}
+
+/** @param {Scope} scope @param {OverrideSlot} slot */
+function claims(scope, slot) {
+    if (!isDefaultUiSlot(slot)) return scope.services[slot] !== undefined;
+    return scope.manifest.hides?.includes(slot) || (scope.root && scope.manifest.overrides?.includes(slot));
 }
 
 /** @param {unknown} value @returns {value is string} */
@@ -333,13 +404,13 @@ function context(scope, inject, tagInUse) {
         signal,
         provide(name, impl) {
             if (name !== 'agent' && name !== 'storage') throw new Error('Unknown service');
-            ensure(name === 'agent' ? 'provide:agent' : 'provide:storage');
-            if (!validService(name, impl) || services[name] !== undefined) throw new Error('Invalid or duplicate service');
+            ensure(servicePermission(name));
+            if (scope.active || !validService(name, impl) || services[name] !== undefined) throw new Error('Invalid or duplicate service');
             Object.assign(services, { [name]: impl });
         },
         inject(name) {
             if (name !== 'agent' && name !== 'storage') throw new Error('Unknown service');
-            ensure(name === 'agent' ? 'provide:agent' : 'provide:storage');
+            ensure(servicePermission(name));
             return services[name] ?? inject(name);
         },
         on(event, handler) {
@@ -378,7 +449,7 @@ function context(scope, inject, tagInUse) {
         ui: Object.freeze({
             registerSlot(slot, descriptor) {
                 ensure('ui');
-                if (!manifest.slots.includes(slot) || !isDescriptor(descriptor, manifest.id)
+                if (scope.active || !manifest.slots.includes(slot) || !isDescriptor(descriptor, manifest.id)
                     || descriptor.entry === manifest.entry || tagInUse(descriptor.tag) || ui.has(descriptor.tag) || ui.size >= maxEffectsPerKind) throw new Error('Invalid or duplicate UI slot');
                 ui.set(descriptor.tag, { slot, descriptor: { ...descriptor } });
             },
@@ -462,9 +533,12 @@ function isDescriptor(descriptor, id) {
 /** @param {keyof Services} name @param {unknown} value */
 function validService(name, value) {
     if (!isObject(value)) return false;
-    if (name === 'agent') return isPluginId(value.id) && typeof value.run === 'function';
-    const { characters, threads } = value;
+    if (name === 'agent') return isPluginId(value.id) && typeof value.run === 'function'
+        && (!('stream' in value.run) || value.run.stream === undefined || typeof value.run.stream === 'function')
+        && (value.stateless === undefined || typeof value.stateless === 'boolean');
+    const { characters, threads, archive } = value;
     return isRecordStore(characters) && (threads === undefined || isRecordStore(threads))
+        && (archive === undefined || (isObject(archive) && typeof archive.read === 'function'))
         && typeof value.namespace === 'function' && typeof value.readLegacyField === 'function';
 }
 

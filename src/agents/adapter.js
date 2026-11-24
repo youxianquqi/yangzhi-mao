@@ -20,6 +20,6 @@
 /** @typedef {(request: AgentRequest) => Promise<AgentResult>} RunAgentTurn */
 /** @typedef {(request: StreamingAgentRequest) => Promise<AgentResult>} StreamAgentTurn */
 /** @typedef {RunAgentTurn & {stream?: StreamAgentTurn}} AgentAdapter */
-/** @typedef {{id: string, run: AgentAdapter}} AgentService */
+/** @typedef {{id: string, run: AgentAdapter, stateless?: boolean}} AgentService */
 
 export {};

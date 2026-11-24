@@ -1,29 +1,33 @@
 // Owns JSON record validation, forward-compatible fields and atomic replacement.
 // The original role file keeps its default thread; extra threads have independent commit points.
-import { randomUUID } from 'node:crypto';
-import { lstat, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
+import { lstat, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DEFAULT_PROVIDER, LIMITS } from './config.js';
 import { AppError, appError } from './errors.js';
+import { createArchiveStore, isStoredMessage, removeFiles, validRefs } from './history-archive.js';
+import { atomicJson, privateDirectory, readJson } from './private-json.js';
 
 const characterIdPattern = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i;
 const providerPattern = /^[a-z][a-z0-9-]{0,63}$/;
 const namespaceKeyPattern = /^[a-z0-9][a-z0-9_-]{0,95}$/;
 const recordExtension = '.json';
 const profileFields = ['name', 'description', 'greeting', 'updatedAt'];
-const coreFields = new Set(['id', 'provider', 'inactiveSessions', 'messages', 'sessionId', 'revisionId', 'defaultThreadDeleted', ...profileFields]);
+const coreFields = new Set(['id', 'provider', 'inactiveSessions', 'messages', 'archive', 'sessionId', 'revisionId', 'defaultThreadDeleted', ...profileFields]);
 const namespaceFileLimit = 64 * 1024;
 
 /** @typedef {{role: 'user'|'assistant', text: string}} Message */
-/** @typedef {{sessionId: string|null, messages: Message[]}} AgentSession */
+/** @typedef {import('./history-archive.js').ArchiveRef} ArchiveRef */
+/** @typedef {import('./history-archive.js').ArchiveChanges} ArchiveChanges */
+/** @typedef {import('./history-archive.js').ArchiveReader} ArchiveReader */
+/** @typedef {{sessionId: string|null, messages: Message[], archive?: ArchiveRef[]}} AgentSession */
 /** @typedef {AgentSession & {id: string, provider: string, inactiveSessions: Record<string, AgentSession>, revisionId?: string}} Conversation */
 /** @typedef {Conversation & {name: string, description: string, greeting: string, updatedAt: string, defaultThreadDeleted?: boolean}} CharacterRecord */
 /** @typedef {Conversation & {name: string, createdAt: string, updatedAt: string}} ThreadRecord */
-/** @typedef {{get: (roleId:string, threadId:string) => Promise<ThreadRecord>, list: (roleId:string) => Promise<ThreadRecord[]>, save: (roleId:string, thread:ThreadRecord, signal?:AbortSignal) => Promise<void>, delete: (roleId:string, threadId:string) => Promise<void>}} ThreadStore */
-/** @typedef {{get: (id: string) => Promise<CharacterRecord>, list: () => Promise<CharacterRecord[]>, save: (record: CharacterRecord, signal?: AbortSignal) => Promise<void>, delete: (id: string) => Promise<void>}} CharacterStore */
+/** @typedef {{get: (roleId:string, threadId:string) => Promise<ThreadRecord>, list: (roleId:string) => Promise<ThreadRecord[]>, save: (roleId:string, thread:ThreadRecord, signal?:AbortSignal, changes?:ArchiveChanges) => Promise<ThreadRecord|void>, delete: (roleId:string, threadId:string) => Promise<void>}} ThreadStore */
+/** @typedef {{get: (id: string) => Promise<CharacterRecord>, list: () => Promise<CharacterRecord[]>, save: (record: CharacterRecord, signal?: AbortSignal, changes?:ArchiveChanges) => Promise<CharacterRecord|void>, delete: (id: string) => Promise<void>}} CharacterStore */
 /** @typedef {import('../types/json.js').JsonValue} JsonValue */
 /** @typedef {{get: (key:string) => Promise<unknown>, set: (key:string,value:JsonValue,signal?:AbortSignal) => Promise<void>, delete: (key:string) => Promise<void>}} NamespaceStore */
-/** @typedef {{characters: CharacterStore, threads?: ThreadStore, namespace: (pluginId: string) => NamespaceStore, readLegacyField: (id: string, field: string) => Promise<unknown>}} StorageService */
+/** @typedef {{characters: CharacterStore, threads?: ThreadStore, archive?: ArchiveReader, namespace: (pluginId: string) => NamespaceStore, readLegacyField: (id: string, field: string) => Promise<unknown>}} StorageService */
 
 /** @param {unknown} id @returns {string} Canonical UUID for filenames and locks. */
 export function normalizeCharacterId(id) {
@@ -42,23 +46,30 @@ export function isProviderId(value) {
     return typeof value === 'string' && providerPattern.test(value) && !Object.hasOwn(Object.prototype, value);
 }
 
-/** @param {number} count @returns {void} */
-export function assertHistoryCapacity(count) {
-    if (count > LIMITS.historyMessages) throw appError('HISTORY_LIMIT');
-}
-
 /** @param {string} dataDir @returns {Promise<StorageService>} */
 export async function createStorageService(dataDir) {
     const directory = join(dataDir, 'characters');
     await privateDirectory(directory);
+    const archive = createArchiveStore(dataDir);
     return {
+        archive: { read: archive.read },
         characters: {
             get: id => readRecord(directory, id),
             list: () => listRecords(directory),
-            save: (record, signal) => saveRecord(directory, record, signal),
-            delete: id => deleteJson(recordPath(directory, normalizeCharacterId(id)), true),
+            save: async (record, signal, changes) => {
+                const id = normalizeCharacterId(record.id);
+                if (!isRecord(record, id)) throw appError('STORAGE_ERROR');
+                return archive.commit(id, id, recordPath(directory, id), record, signal, changes);
+            },
+            delete: async id => {
+                const key = normalizeCharacterId(id);
+                const previous = await readRecord(directory, key);
+                const obsolete = await archive.obsoleteShards(key, key, previous);
+                await deleteJson(recordPath(directory, key), true);
+                await removeFiles(obsolete);
+            },
         },
-        threads: createThreadStore(dataDir),
+        threads: createThreadStore(dataDir, archive),
         namespace: pluginId => createNamespace(dataDir, pluginId),
         readLegacyField: async (id, field) => {
             if (typeof field !== 'string' || !/^[a-z][a-zA-Z0-9_-]{0,48}$/.test(field) || coreFields.has(field)) {
@@ -86,7 +97,7 @@ function isConversation(record) {
 function isSession(data) {
     return (data?.sessionId === null || (typeof data?.sessionId === 'string' && data.sessionId.trim() !== ''))
         && Array.isArray(data.messages)
-        && data.messages.every(message => ['user', 'assistant'].includes(message?.role) && typeof message.text === 'string');
+        && data.messages.every(isStoredMessage) && (data.archive === undefined || validRefs(data.archive));
 }
 
 function isInactiveSessions(sessions, provider) {
@@ -122,15 +133,8 @@ async function listRecords(directory) {
     }
 }
 
-async function saveRecord(directory, record, signal) {
-    const id = normalizeCharacterId(record.id);
-    if (!isRecord(record, id)) throw appError('STORAGE_ERROR');
-    assertHistoryCapacity(record.messages.length);
-    await atomicJson(recordPath(directory, id), JSON.stringify(record, null, 2) + '\n', signal);
-}
-
-/** @param {string} dataDir @returns {ThreadStore} */
-function createThreadStore(dataDir) {
+/** @param {string} dataDir @param {ReturnType<typeof createArchiveStore>} archive @returns {ThreadStore} */
+function createThreadStore(dataDir, archive) {
     const base = join(dataDir, 'threads');
 
     /** @param {string} roleId @param {boolean} [create] */
@@ -185,18 +189,20 @@ function createThreadStore(dataDir) {
                 throw cause instanceof AppError ? cause : appError('STORAGE_ERROR', { cause });
             }
         },
-        save: async (roleId, record, signal) => {
+        save: async (roleId, record, signal, changes) => {
             const key = extraThreadId(roleId, record.id);
             if (!isThread(record, key)) throw appError('STORAGE_ERROR');
-            assertHistoryCapacity(record.messages.length);
             const directory = await directoryFor(roleId, true);
-            await atomicJson(recordPath(directory, key), JSON.stringify(record, null, 2) + '\n', signal);
+            return archive.commit(normalizeCharacterId(roleId), key, recordPath(directory, key), record, signal, changes);
         },
         delete: async (roleId, threadId) => {
             const key = extraThreadId(roleId, threadId);
             const directory = await directoryFor(roleId);
             if (!directory) throw appError('THREAD_NOT_FOUND');
+            const previous = await get(directory, key);
+            const obsolete = await archive.obsoleteShards(normalizeCharacterId(roleId), key, previous);
             await deleteJson(recordPath(directory, key), true, 'THREAD_NOT_FOUND');
+            await removeFiles(obsolete);
         },
     };
 }
@@ -242,26 +248,6 @@ function createNamespace(dataDir, pluginId) {
     };
 }
 
-async function privateDirectory(dir) {
-    try {
-        await mkdir(dir, { recursive: true, mode: 0o700 });
-        if (!(await lstat(dir)).isDirectory()) throw new Error('Not a local directory');
-    } catch (cause) {
-        throw appError('STORAGE_ERROR', { cause });
-    }
-}
-
-async function readJson(file, maxBytes = Infinity) {
-    try {
-        const stat = await lstat(file);
-        if (!stat.isFile() || stat.size > maxBytes) throw appError('STORAGE_ERROR');
-        return JSON.parse(await readFile(file, 'utf8'));
-    } catch (cause) {
-        if (cause?.code === 'ENOENT') return undefined;
-        throw cause;
-    }
-}
-
 async function deleteJson(file, mustExist, missingCode = /** @type {'CHARACTER_NOT_FOUND'|'THREAD_NOT_FOUND'} */ ('CHARACTER_NOT_FOUND')) {
     try { await unlink(file); }
     catch (cause) {
@@ -270,22 +256,5 @@ async function deleteJson(file, mustExist, missingCode = /** @type {'CHARACTER_N
             return;
         }
         throw appError('STORAGE_ERROR', { cause });
-    }
-}
-
-async function atomicJson(file, text, signal) {
-    if (signal?.aborted) throw appError('STREAM_ABORTED');
-    const temporary = file + '.' + randomUUID() + '.tmp';
-    try {
-        await writeFile(temporary, text, { flag: 'wx', mode: 0o600, flush: true, signal });
-        // Rename is the commit point. A later close cannot undo a committed write.
-        if (signal?.aborted) throw appError('STREAM_ABORTED');
-        await rename(temporary, file);
-    } catch (cause) {
-        if (cause instanceof AppError) throw cause;
-        if (cause?.name === 'AbortError' && signal?.aborted) throw appError('STREAM_ABORTED');
-        throw appError('STORAGE_ERROR', { cause });
-    } finally {
-        await rm(temporary, { force: true }).catch(() => {});
     }
 }

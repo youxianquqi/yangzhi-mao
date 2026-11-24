@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { apply } from '../plugins/agent-openai-compat/index.js';
 import { readCompletion } from '../plugins/agent-openai-compat/sse.js';
-import { contentType, delta, frame, readMockRequest, startOpenAIMock } from '../fixtures/mock-openai.mjs';
+import { contentType, delta, frame, readMockRequest, startOpenAIMock } from './fixtures/mock-openai.mjs';
 
 const request = {
     cwd: '.',
@@ -20,7 +20,7 @@ test('兼容 HTTP Agent 只发送显式目的端，流式文本可续聊，且�
         received = await readMockRequest(req);
         res.writeHead(200, contentType);
         res.write(': keep-alive\r\n\r\n' + frame({ choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: '私有思考' }, finish_reason: null }] }));
-        res.write(frame(delta('脚印')));
+        res.write(frame({ choices: [] }) + frame(delta('脚印')) + frame({ choices: [] }));
         res.end(frame(delta('在楼上。', 'stop')) + frame({ choices: [], usage: { total_tokens: 42 } }) + frame('[DONE]'));
     });
     const { agent } = install({ baseUrl: endpoint + '/v1/', model: 'mock-model' });
@@ -70,6 +70,7 @@ test('未收到自然结束与 DONE、拒绝或试图调用工具的轮次都失
     for (const [payload, code] of [
         [frame(delta('半截', 'stop')), 'AGENT_INCOMPLETE'],
         [frame(delta('半截')) + frame('[DONE]'), 'AGENT_INCOMPLETE'],
+        [frame({ choices: [] }) + frame('[DONE]'), 'AGENT_INCOMPLETE'],
         [frame(delta('半截', 'length')) + frame('[DONE]'), 'AGENT_INCOMPLETE'],
         [frame({ choices: [{ index: 0, delta: { tool_calls: [{ id: 'no' }] }, finish_reason: null }] }), 'AGENT_INCOMPLETE'],
         ['data: {oops}\n\n', 'AGENT_PROTOCOL'],

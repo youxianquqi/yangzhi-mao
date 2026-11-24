@@ -15,13 +15,22 @@ browser -- HTTP --> thread route --> per-thread lock --> persisted history
    +--- SSE done <----------------- wx temp + rename <--- valid reply
 ```
 
+## 两层边界
+
+宿主固定维护数字回环监听、Host／Origin／JSON 边界、CSP、跨进程锁、原子写入原语、白名单和安全模式。这些没有插件接管接口。默认 `agent`、`storage` 以及三个可选前端默认槽位可以由经过授权的插件替换；替换存储实现仍须提供原子提交，不属于隔离沙箱。插件卸载时内核先撤销路由、钩子和槽位，再中止工作和逆序清理。默认模型是 DeepSeek，可在网页切换 MiniMax；两者与旧 Codex 存档各自隔离。
+
+## 首次打开
+
+设置只报告是否已配置可用的默认模型或是否有活动的替代 Agent，不替用户发起试用请求。浏览器仅在尚无模型时提供首次引导；完成或跳过后按当前浏览器保存状态。顶栏的设置和帮助始终留在宿主界面，不受默认槽位接管影响。
+
 ## 磁盘与并发
 
 - 角色档案和默认剧情线兼容 `DATA_DIR/characters/<roleId>.json`。旧单会话记录虚拟映射到与角色同 UUID 的默认线，读取不改写。额外剧情线写在 `DATA_DIR/threads/<roleId>/<threadId>.json`，各自维护 Agent 专属的本地记录与可丢弃的远端 `sessionId`。删除最后一条剧情线返回 409。旧接口使用默认线；若该线已删除，则使用下一条仍存在的线。
 - 同一剧情线的消息修改、重抽和发送共享一把跨进程锁；不同线独立。涉及成员变更或角色删除的操作另做协调。操作正在进行时返回 `409 CHARACTER_BUSY`；只有在确认同机持锁进程已退出且令牌相符时才回收遗留锁。不要在共享盘上使用锁目录。
 - 一轮成功后才写入。目录与文件以 `0o700`／`0o600` 创建（Windows 由父目录 ACL 主导）；写入经过 `wx` 临时文件和 `rename`。提交前观察到 Abort 时回收子进程、释放锁、保留原文件。若连接正好在提交后断开，先重新读取历史，不要自动重发。远端 CLI 已收到的输入或会话状态无法随本地 Abort 回滚。
 - 编辑只替换目标文本，不改角色也不重新生成后文；回退删除目标及之后的内容。两者均清空当前远端续聊引用。重抽用最后一个用户输入和早于它的已提交历史开启新远端会话，成功才替换最后一条助手回复，失败仍保留旧回复。默认适配器发送本地历史作为新会话的上下文，不自动重试。
-- 每个角色最多 24 条剧情线，每线每个 Agent 最多 200 条消息；旧超额记录仍能读取，可先回退或重置，不默默删除早期消息。默认每页 60 条（接口允许 1–100 条），最多取 `before` 之前的消息（不含该序号）；返回绝对零基 `start` 和 `revision`。编辑、回退、重抽要求当前修订；客户端对错版数据重新加载，服务端返回 `409 THREAD_CHANGED`，不把旧序号应用于新历史。
+- 每个角色最多 24 条剧情线。默认存储按线、按 Agent 保存最近最多 200 条活跃消息；超过窗口时，较早消息写入 `DATA_DIR/archives/<role>/<thread>/<provider>/` 的私有不可变分片。先写分片，再由主记录原子 `rename` 发布引用；只有主记录发布成功才可读到新增历史。旧版内联存档可直接读，下一次成功写入时再按需归档，无须预先迁移。模型只接收活跃窗口，不会随全量归档持续扩大请求。
+- 默认每页 60 条（接口允许 1–100 条），最多取 `before` 之前的消息（不含该序号）。跨分片与活跃窗口返回同一绝对零基 `start`、总数和 `revision`。编辑、回退、重抽要求当前修订；版本冲突返回 `409 THREAD_CHANGED`，不把旧序号用于新历史。兼容角色接口仍返回原形状，归档后的 `messages` 是活跃窗口；完整历史请使用剧情线分页接口。
 - 插件命名空间位于 `DATA_DIR/plugin-data/<pluginId>/`。键值单独原子提交，不属于聊天事务，也不随角色删除或卸载自动清理。第三方存储实现可复用 `storage` 契约改用 SQLite。只提供旧角色存储接口的实现可继续运行默认线，无法创建额外的剧情线。
 
 ## HTTP 与 SSE
@@ -40,7 +49,11 @@ browser -- HTTP --> thread route --> per-thread lock --> persisted history
 | `POST M/regenerate` · `POST M/regenerate/stream` | `{revision}`；JSON 或 SSE 重抽最后一条助手回复。 |
 | `DELETE T/session` | 清空本线当前 Agent 的消息和续聊引用，不影响其他线或其他 Agent。 |
 | `POST C/messages` · `POST C/messages/stream` · `DELETE C/session` | 保留原路径及数据形状，作用于兼容线。 |
-| `GET /api/health` · `GET /api/plugins/ui` | 当前 Agent／已注册的插件 UI。 |
+| `GET /api/health` · `GET /api/plugins/ui` · `GET /api/plugins/ui/defaults` | 当前 Agent／插件 UI 与生效的默认槽位接管。 |
+| `GET /api/settings` · `PUT /api/settings/model` | 本机模型及插件状态，模型密钥仅回传配置状态与脱敏末尾。 |
+| `POST /api/settings/model/test` · `PUT /api/settings/plugins/:id` | 有时限、限制目标的连接探测；显式更新白名单并同步进程内生命周期。 |
+
+设置端点仅接受数字回环同源请求。模型设置与密钥原子保存于独立的 `DATA_DIR/secrets.json`（Unix `0o600`），不进入角色档案或日志；官方端点可使用更高优先级的环境变量。
 
 SSE 请求与普通 JSON 请求共享安全校验。开流前可返回普通 4xx JSON；开流后保持 HTTP 200，使用 `text/event-stream; charset=utf-8` 和 `X-Request-Id`。
 

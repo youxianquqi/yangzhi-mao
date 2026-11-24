@@ -1,6 +1,8 @@
 // Links the native chat shell to the same-origin HTTP API and generic plugin mounts.
 // Rendering never interprets server or user text as markup.
-import { discoverExtensions, hasExtensions, updateMessageActions, updateSidebar } from './extensions.js';
+import { bindToolbarCharacterCreated, discoverExtensions, hasExtensions, updateDefaultModule, updateMessageActions, updateSidebar, updateToolbar } from './extensions.js';
+import { bindGettingStarted } from './guide.js';
+import { createSettingsPanel } from './settings.js';
 import { activateCharacter, createChatState, isNearChatEnd } from './state.js';
 import { requestThreadTurn, withRequestId } from './stream.js';
 import { applyThreadCommit, pageSize, prependPage, readMessagePage } from './thread-state.js';
@@ -26,6 +28,10 @@ const profileForm = control('profile-form', HTMLFormElement);
 const sendForm = control('send-form', HTMLFormElement);
 const search = control('character-search', HTMLInputElement);
 const extensionPanel = $('extension-sidebar');
+const toolbar = $('plugin-toolbar');
+const defaultSidebar = $('default-character-sidebar');
+const replacementSidebar = $('plugin-character-sidebar');
+const replacementThreadSelector = $('plugin-thread-selector');
 const threadPicker = control('thread-select', HTMLSelectElement);
 const threadDialog = control('thread-dialog', HTMLDialogElement);
 const messageDialog = control('message-dialog', HTMLDialogElement);
@@ -63,11 +69,28 @@ let busy = false;
 let activeStream = null;
 let drawerOpen = false;
 let extensionsOpen = desktopExtensions.matches;
+/** @type {string|null} */
+let pendingAgent = null;
+/** @type {string|null} */
+let pendingCharacter = null;
 
 setTheme(readPreference(themeKey) === 'dark');
 bindEvents();
+let settingsUpdated = false;
+const settingsPanel = createSettingsPanel(api, (settings, _previous, reloadExtensions) => {
+    settingsUpdated = true;
+    gettingStarted.update(settings.modelAvailable);
+    if (reloadExtensions) void discoverExtensions(refreshExtensions);
+    pendingAgent = settings.activeAgent;
+    applyPendingNavigation();
+});
+const gettingStarted = bindGettingStarted(settingsPanel.open, readPreference, writePreference);
 renderPage();
 void work(initialize);
+void settingsPanel.read().then(settings => {
+    // A fresher settings-panel response (including a save) wins over startup.
+    if (!settingsUpdated) gettingStarted.update(settings.modelAvailable);
+}).catch(() => { /* Settings can be retried from the toolbar. */ });
 void discoverExtensions(refreshExtensions).catch(() => {
     console.warn({ event: 'plugin_ui_registry_failed' });
 });
@@ -93,6 +116,19 @@ function bindEvents() {
     search.addEventListener('input', () => { renderList(); controls(); });
     $('theme-toggle').addEventListener('click', () => setTheme(document.documentElement.dataset.theme !== 'dark'));
     $('mobile-menu').addEventListener('click', () => setDrawer(!drawerOpen));
+    bindToolbarCharacterCreated(toolbar, id => {
+        pendingCharacter = id;
+        applyPendingNavigation();
+    });
+    replacementSidebar.addEventListener('write-select-character', event => {
+        if (!(event instanceof CustomEvent) || !state.characters.some(item => item.id === event.detail)) return;
+        void work(() => select(event.detail));
+    });
+    replacementThreadSelector.addEventListener('write-select-thread', event => {
+        const id = state.current?.id;
+        if (!id || !(event instanceof CustomEvent) || !threads.some(item => item.id === event.detail)) return;
+        void work(() => selectThread(id, event.detail));
+    });
     $('drawer-backdrop').addEventListener('click', () => setDrawer(false, true));
     mobile.addEventListener('change', () => setDrawer(false));
     desktopExtensions.addEventListener('change', () => { extensionsOpen = desktopExtensions.matches; updatePanels(); });
@@ -217,15 +253,40 @@ async function work(task, target = $('status')) {
     } finally {
         busy = false;
         controls();
+        applyPendingNavigation();
     }
+}
+
+function applyPendingNavigation() {
+    if (busy) return;
+    const created = pendingCharacter;
+    if (created) {
+        pendingCharacter = null;
+        void work(() => selectCreatedCharacter(created));
+        return;
+    }
+    if (!pendingAgent) return;
+    const current = state.current;
+    const agent = pendingAgent;
+    pendingAgent = null;
+    if (current && current.provider !== agent) void work(() => select(current.id));
+}
+
+/** @param {string} id */
+async function selectCreatedCharacter(id) {
+    const characters = /** @type {CharacterSummary[]} */ (await api(charactersPath));
+    state = { ...state, characters };
+    if (characters.some(item => item.id === id)) {
+        search.value = '';
+        await select(id, true);
+    } else renderList();
 }
 
 function renderPage() {
     renderList();
     renderThreadPicker();
     renderChat();
-    updateSidebar(extensionPanel, state.current?.id ?? null, state.current?.threadId ?? null);
-    updatePanels();
+    renderExtensionModules();
     controls();
 }
 
@@ -305,11 +366,21 @@ function renderChatHeader() {
     olderControls.hidden = !page?.start;
 }
 
+function renderExtensionModules() {
+    const id = state.current?.id ?? null;
+    const thread = state.current?.threadId ?? null;
+    updateDefaultModule('character-sidebar', defaultSidebar, replacementSidebar, id, thread);
+    updateDefaultModule('thread-selector', $('default-thread-selector'), replacementThreadSelector, id, thread);
+    updateDefaultModule('main-view', $('default-main-view'), $('plugin-main-view'), id, thread);
+    updateToolbar(toolbar, id, thread);
+    updateSidebar(extensionPanel, id, thread);
+    updatePanels();
+}
+
 function refreshExtensions() {
     const current = state.current;
-    updateSidebar(extensionPanel, current?.id ?? null, current?.threadId ?? null);
-    updatePanels();
-    if (!current || !page || !hasExtensions('message-actions')) return;
+    renderExtensionModules();
+    if (!current || !page) return;
     mutateTimeline(() => {
         for (const container of transcript.querySelectorAll('div[data-message-index]')) {
             const node = /** @type {HTMLDivElement} */ (container);
@@ -408,8 +479,12 @@ function updatePanels() {
     toggle.hidden = !enabled;
     toggle.classList.toggle('is-active', visible);
     toggle.setAttribute('aria-expanded', String(visible));
-    $('sidebar').classList.toggle('is-mobile-open', drawerOpen);
-    $('sidebar').inert = mobile.matches && !drawerOpen;
+    const sidebar = $('sidebar');
+    sidebar.hidden = defaultSidebar.hidden && replacementSidebar.hidden;
+    if (sidebar.hidden) drawerOpen = false;
+    $('mobile-menu').hidden = sidebar.hidden;
+    sidebar.classList.toggle('is-mobile-open', drawerOpen);
+    sidebar.inert = mobile.matches && !drawerOpen;
     $('drawer-backdrop').classList.toggle('is-open', drawerOpen);
     $('mobile-menu').setAttribute('aria-expanded', String(drawerOpen));
 }
@@ -418,7 +493,7 @@ function updatePanels() {
 function setDrawer(open, restoreFocus = false) {
     drawerOpen = open && mobile.matches;
     updatePanels();
-    if (drawerOpen) search.focus();
+    if (drawerOpen) (defaultSidebar.hidden ? replacementSidebar : search).focus();
     else if (restoreFocus && mobile.matches) $('mobile-menu').focus();
 }
 

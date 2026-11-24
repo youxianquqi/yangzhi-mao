@@ -5,7 +5,7 @@
 /** @typedef {{cluesText: string, summary: string}} Draft */
 /** @typedef {{saved: Map<string, Notes>, pending: Map<string, Draft>}} Drafts */
 
-const route = '/api/plugins/story-clues/notes/';
+const route = '/api/plugins/story-clues/';
 
 /** @returns {Drafts} */
 export function createDrafts() {
@@ -37,7 +37,7 @@ if (typeof customElements !== 'undefined' && !customElements.get('story-clues-pa
 
 function registerPanel() {
     class StoryCluesPanel extends HTMLElement {
-        static observedAttributes = ['character-id'];
+        static observedAttributes = ['character-id', 'thread-id'];
 
         #drafts = createDrafts();
         #summary = node('textarea', '', 'note-summary');
@@ -49,6 +49,7 @@ function registerPanel() {
         /** @type {AbortController|null} */
         #request = null;
         #ready = false;
+        #reloadQueued = false;
 
         constructor() {
             super();
@@ -69,7 +70,7 @@ function registerPanel() {
             this.#retry.type = 'button';
             this.#retry.hidden = true;
             this.#retry.addEventListener('click', () => { void this.#load(); });
-            form.append(field('阶段摘要', this.#summary, '已保存的摘要与线索只用于新会话首轮。'),
+            form.append(field('阶段摘要', this.#summary, '按剧情线保存。HTTP 模型每轮读取；CLI 在新会话开始时读取。'),
                 field('关键线索档案', this.#clues, '每行一条线索，空行会自动忽略。'),
                 this.#cards, this.#save, this.#retry, this.#status);
             form.addEventListener('input', () => this.#recordDraft());
@@ -83,21 +84,37 @@ function registerPanel() {
             this.#request = null;
             this.#ready = false;
         }
-        attributeChangedCallback() { if (this.isConnected) void this.#load(); }
+        attributeChangedCallback() {
+            if (!this.isConnected || this.#reloadQueued) return;
+            this.#reloadQueued = true;
+            queueMicrotask(() => {
+                this.#reloadQueued = false;
+                if (this.isConnected) void this.#load();
+            });
+        }
+
+        #scope() {
+            const characterId = this.getAttribute('character-id');
+            if (!characterId) return null;
+            const threadId = this.getAttribute('thread-id');
+            return threadId && threadId !== characterId
+                ? { id: threadId, resource: 'thread-notes' } : { id: characterId, resource: 'notes' };
+        }
 
         async #load() {
             this.#request?.abort();
             this.#request = null;
             this.#ready = false;
-            const id = this.getAttribute('character-id');
-            this.#render(id);
-            if (!id) return;
+            const scope = this.#scope();
+            this.#render(scope?.id ?? null);
+            if (!scope) return;
+            const { id } = scope;
             const request = new AbortController();
             this.#request = request;
             this.#retry.hidden = true;
             this.#show('正在读取笔记…');
             try {
-                const value = await fetchNotes(id, request.signal);
+                const value = await fetchNotes(scope, request.signal);
                 if (request.signal.aborted) return;
                 receiveNotes(this.#drafts, id, value);
                 this.#ready = true;
@@ -115,7 +132,7 @@ function registerPanel() {
         }
 
         #recordDraft() {
-            const id = this.getAttribute('character-id');
+            const id = this.#scope()?.id;
             if (!id || !this.#ready || this.#request) return;
             this.#drafts.pending.set(id, { cluesText: this.#clues.value, summary: this.#summary.value });
             this.#show('');
@@ -123,8 +140,9 @@ function registerPanel() {
         }
 
         async #submit() {
-            const id = this.getAttribute('character-id');
-            if (!id || !this.#ready || this.#request) return;
+            const scope = this.#scope();
+            if (!scope || !this.#ready || this.#request) return;
+            const { id } = scope;
             const { draft, dirty } = readDraft(this.#drafts, id);
             if (!dirty) return;
             const request = new AbortController();
@@ -132,7 +150,7 @@ function registerPanel() {
             this.#updateCards(id);
             this.#show('正在保存…');
             try {
-                const saved = await fetchNotes(id, request.signal, notesFromDraft(draft));
+                const saved = await fetchNotes(scope, request.signal, notesFromDraft(draft));
                 if (request.signal.aborted) return;
                 receiveNotes(this.#drafts, id, saved, true);
                 this.#show('线索笔记已保存。');
@@ -174,9 +192,9 @@ function registerPanel() {
     customElements.define('story-clues-panel', StoryCluesPanel);
 }
 
-/** @param {string} id @param {AbortSignal} signal @param {Notes} [value] @returns {Promise<Notes>} */
-async function fetchNotes(id, signal, value) {
-    const response = await fetch(route + encodeURIComponent(id), {
+/** @param {{id:string,resource:string}} scope @param {AbortSignal} signal @param {Notes} [value] @returns {Promise<Notes>} */
+async function fetchNotes({ id, resource }, signal, value) {
+    const response = await fetch(route + resource + '/' + encodeURIComponent(id), {
         method: value ? 'PUT' : 'GET', signal,
         ...(value ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) } : {}),
     });

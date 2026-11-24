@@ -1314,3 +1314,80 @@ button:disabled {
   .thread-toolbar .btn { font-size: 11px; padding-inline: 6px; }
   .thread-select { flex-basis: 74px; }
 }
+
+/* Default regions stay in the DOM while a declared plugin occupies their slot. */
+.sidebar-default { display: contents; }
+.sidebar-replacement { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
+.main-view-replacement { overflow: auto; }
+:is(.sidebar-replacement, .main-view-replacement, .thread-toolbar) > write-plugin-mount { width: 100%; }
+
+/* Native settings dialog and its two independently operated sections. */
+.settings-dialog { width: min(590px, calc(100% - 24px)); max-width: none; }
+#settings-dialog[open] { display: flex; max-height: 90dvh; }
+#settings-dialog > .modal-header { flex-shrink: 0; }
+.settings-body { min-height: 0; }
+.settings-footer {
+  flex-shrink: 0;
+  min-height: 28px;
+  padding: 4px 18px 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+.settings-footer > .btn { margin-top: 5px; }
+.settings-body h3 { margin: 0 0 7px; font-size: 15px; }
+.settings-body fieldset { margin: 8px 0 0; padding: 0; border: 0; min-width: 0; display: grid; gap: 9px; }
+.settings-body .field-input { width: 100%; }
+.settings-advanced { padding: 8px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); }
+.settings-advanced > summary { cursor: pointer; color: var(--text-secondary); font-size: 13px; }
+.settings-advanced .form-group { margin-top: 9px; }
+.settings-check { display: flex; gap: 6px; align-items: center; }
+.settings-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.settings-plugins { list-style: none; padding: 0; margin: 7px 0 0; }
+.settings-plugins li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 0; }
+.settings-plugins li + li { border-top: 1px solid var(--border-subtle); }
+.settings-plugins li > div { min-width: 0; overflow-wrap: anywhere; }
+.settings-plugins li > :is(button, span) { flex-shrink: 0; }
+#settings-safe-mode { background: var(--accent-soft); color: var(--text-primary); padding: 8px; border-radius: var(--radius-sm); }
+
+/* First-run invitation and the always-available tutorial. */
+.welcome-story {
+  flex-shrink: 0;
+  margin: 10px 14px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+}
+.welcome-story h2 { margin: 0; font-size: 14px; color: var(--accent); }
+.welcome-story p { margin: 6px 0 8px; font-size: 13px; line-height: 1.55; }
+.guide-body { max-height: calc(90dvh - 58px); gap: 8px; }
+.guide-topic {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 9px 10px;
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.guide-topic > summary { cursor: pointer; font-weight: 700; }
+.guide-topic :is(p, ol, ul) { margin: 7px 0; }
+.guide-topic :is(ol, ul) { padding-inline-start: 24px; }
+.guide-topic .btn { margin-top: 4px; }
+
+/* Additive tools may scroll without squeezing the reserved Help/Settings controls. */
+.plugin-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: min(36vw, 320px);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.plugin-toolbar > write-plugin-mount { display: block; flex: none; }
+.ribbon-right { flex-shrink: 0; }
+.ribbon-right > .ribbon-icon-btn { flex: 0 0 32px; }
+.brand-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 460px) {
+  .brand-ribbon { gap: 8px; padding-inline: 8px; }
+  .ribbon-left, .ribbon-right { gap: 5px; }
+}

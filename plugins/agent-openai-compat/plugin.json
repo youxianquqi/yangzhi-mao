@@ -4,6 +4,8 @@
   "version": "1.0.0",
   "entry": "index.js",
   "slots": [],
+  "overrides": ["agent"],
+  "overrides": ["agent"],
   "permissions": [
     "provide:agent"
   ]

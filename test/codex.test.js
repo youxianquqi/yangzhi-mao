@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { runCodex } from '../src/agents/codex.js';
 
-const fake = fileURLToPath(new URL('../fixtures/fake-codex.mjs', import.meta.url));
+const fake = fileURLToPath(new URL('./fixtures/fake-codex.mjs', import.meta.url));
 const command = { file: process.execPath, prefix: [fake] };
 const character = { name: '小写', description: '角色说明', greeting: '你好' };
 const sessionId = '71a595b0-8995-4ab2-9000-5a27d4c8dd95';

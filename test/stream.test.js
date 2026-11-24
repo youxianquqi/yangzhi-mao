@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from '../server.js';
 import { runCodex, runCodexStream } from '../src/agents/codex.js';
 
-const mock = fileURLToPath(new URL('../fixtures/fake-codex.mjs', import.meta.url));
+const mock = fileURLToPath(new URL('./fixtures/fake-codex.mjs', import.meta.url));
 const command = { file: process.execPath, prefix: [mock] };
 const agent = Object.assign(input => runCodex({ ...input, command }), {
     stream: input => runCodexStream({ ...input, command, timeoutMs: 15_000 }),

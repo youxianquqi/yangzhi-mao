@@ -23,6 +23,9 @@
       </div>
       <div class="ribbon-right">
         <span class="ribbon-pill hide-on-mobile"><span class="ribbon-dot"></span>LOCAL // 本机频道</span>
+        <div class="plugin-toolbar" id="plugin-toolbar" role="group" aria-label="插件工具" hidden></div>
+        <button type="button" class="ribbon-icon-btn" id="open-help" title="使用教程" aria-label="打开使用教程" aria-haspopup="dialog">?</button>
+        <button type="button" class="ribbon-icon-btn" id="open-settings" title="模型与插件设置" aria-label="模型与插件设置" aria-haspopup="dialog">⚙</button>
         <button type="button" class="ribbon-icon-btn" id="theme-toggle" title="切换晴空／星夜主题" aria-label="星夜主题" aria-pressed="false">☾</button>
       </div>
     </header>
@@ -30,20 +33,23 @@
     <div class="app-shell">
       <div class="drawer-backdrop" id="drawer-backdrop" aria-hidden="true"></div>
       <aside class="sidebar" id="sidebar" aria-label="角色通讯录">
-        <div class="sidebar-actions">
-          <div class="sidebar-top-row">
-            <span class="sidebar-kicker">CONTACTS // 通讯录</span>
-            <button type="button" class="btn btn-primary" id="create">＋ 新建角色</button>
+        <div id="default-character-sidebar" class="sidebar-default">
+          <div class="sidebar-actions">
+            <div class="sidebar-top-row">
+              <span class="sidebar-kicker">CONTACTS // 通讯录</span>
+              <button type="button" class="btn btn-primary" id="create">＋ 新建角色</button>
+            </div>
+            <div class="search-box">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+              </svg>
+              <input type="search" class="search-input" id="character-search" placeholder="搜索角色名称…" aria-label="搜索角色">
+            </div>
           </div>
-          <div class="search-box">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-              <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
-            </svg>
-            <input type="search" class="search-input" id="character-search" placeholder="搜索角色名称…" aria-label="搜索角色">
-          </div>
+          <div class="character-list" id="characters"></div>
+          <footer class="sidebar-footer"><span class="status-pill"><span class="status-dot"></span>本机对话 · 本地存档</span></footer>
         </div>
-        <div class="character-list" id="characters"></div>
-        <footer class="sidebar-footer"><span class="status-pill"><span class="status-dot"></span>本机对话 · 本地存档</span></footer>
+        <div id="plugin-character-sidebar" class="sidebar-replacement" tabindex="-1" hidden></div>
       </aside>
 
       <main class="main-stage" aria-labelledby="title">
@@ -66,19 +72,28 @@
             <button type="button" class="btn btn-secondary" id="toggle-extensions" aria-controls="extension-sidebar" aria-expanded="false" hidden>扩展</button>
           </div>
         </header>
+        <section class="welcome-story" id="model-welcome" aria-labelledby="welcome-title" hidden>
+          <h2 id="welcome-title">通讯站来信 · 接待猫</h2>
+          <p>你推开通讯站的门，一只戴着耳麦的橘猫从控制台后探出头：「喵，欢迎来到 MeowTalk！」它把一张空白通行证推过来：「填好 DeepSeek 或 MiniMax 的 API Key，就能听见角色的声音啦。」</p>
+          <div class="settings-actions">
+            <button class="btn btn-secondary" id="skip-welcome" type="button">稍后再说</button>
+            <button class="btn btn-primary" id="welcome-settings" type="button" aria-haspopup="dialog">打开模型设置</button>
+          </div>
+        </section>
         <div class="conversation-tools" id="conversation-tools" hidden>
-          <div class="thread-toolbar">
+          <div class="thread-toolbar" id="default-thread-selector">
             <label for="thread-select" class="panel-title-badge">剧情线</label>
             <select id="thread-select" class="thread-select" aria-label="切换剧情线"></select>
             <button class="btn btn-secondary" id="thread-create" type="button">＋ 新剧情线</button>
             <button class="btn btn-secondary" id="thread-delete" type="button">删除剧情线</button>
           </div>
+          <div id="plugin-thread-selector" class="thread-toolbar" hidden></div>
           <details class="dossier-card profile-dossier" id="dossier">
             <summary class="dossier-title">◆ 角色档案</summary>
             <p class="dossier-body" id="dossier-description"></p>
           </details>
         </div>
-        <div class="chat-viewport">
+        <div class="chat-viewport" id="default-main-view">
           <section class="chat-scroll" id="chat-scroll" tabindex="0" aria-label="聊天记录">
             <div class="chat-older" id="older-controls" hidden>
               <button class="btn btn-secondary" id="older" type="button">加载更早记录</button>
@@ -87,6 +102,7 @@
           </section>
           <button type="button" class="btn btn-secondary jump-latest" id="jump-latest" aria-controls="chat-scroll" hidden>↓ 返回最新消息</button>
         </div>
+        <div class="chat-viewport main-view-replacement" id="plugin-main-view" hidden></div>
         <footer class="composer-wrap">
           <div class="composer-inner">
             <form class="composer-box" id="send-form">
@@ -108,6 +124,91 @@
     </div>
   </div>
 
+  <dialog class="modal-dialog app-dialog settings-dialog" id="settings-dialog" aria-labelledby="settings-title">
+    <header class="modal-header">
+      <h2 class="modal-title" id="settings-title">模型与插件设置</h2>
+      <button class="btn-icon" id="close-settings" type="button" aria-label="关闭设置" autofocus>×</button>
+    </header>
+    <div class="modal-body settings-body">
+      <p class="feedback" id="settings-safe-mode" hidden>当前为安全模式（SAFE_MODE=1），不会加载任何插件。可在这里停用有问题的插件，再退出安全模式并重启。</p>
+      <section aria-labelledby="model-settings-title">
+        <h3 id="model-settings-title">模型</h3>
+        <p class="feedback" id="active-model"></p>
+        <form id="model-form" autocomplete="off">
+          <fieldset id="model-fields" disabled>
+            <label class="form-group">官方预设 <select class="field-input" id="model-preset" required></select></label>
+            <label class="form-group">API Key <input class="field-input" id="model-api-key" type="password" maxlength="2048" autocomplete="new-password" spellcheck="false" aria-describedby="model-key-status" placeholder="留空则不修改当前密钥"></label>
+            <p class="feedback" id="model-key-status"></p>
+            <label class="settings-check feedback" id="model-forget-label" hidden><input type="checkbox" id="model-forget-key"> 保存时清除已保存的密钥</label>
+            <details class="settings-advanced">
+              <summary>进阶配置：Base URL 与模型名</summary>
+              <label class="form-group">Base URL <input class="field-input" id="model-base-url" type="url" maxlength="2048" spellcheck="false"></label>
+              <label class="form-group">模型名 <input class="field-input" id="model-name" maxlength="200" spellcheck="false"></label>
+            </details>
+            <div class="settings-actions">
+              <button type="button" class="btn btn-secondary" id="test-model">测试连接</button>
+              <button type="submit" class="btn btn-primary">保存模型</button>
+            </div>
+          </fieldset>
+        </form>
+      </section>
+      <section aria-labelledby="plugin-settings-title">
+        <h3 id="plugin-settings-title">插件</h3>
+        <p class="feedback">插件运行在本机同进程，请仅启用信任代码。</p>
+        <ul class="settings-plugins" id="settings-plugins"></ul>
+      </section>
+    </div>
+    <footer class="settings-footer">
+      <p class="feedback" id="settings-feedback" role="status"></p>
+      <button type="button" class="btn btn-secondary" id="retry-settings" hidden>重试加载设置</button>
+    </footer>
+  </dialog>
+  <dialog class="modal-dialog app-dialog settings-dialog" id="help-dialog" aria-labelledby="help-title">
+    <header class="modal-header">
+      <h2 class="modal-title" id="help-title">使用教程</h2>
+      <button class="btn-icon" id="close-help" type="button" aria-label="关闭教程" autofocus>×</button>
+    </header>
+    <div class="modal-body guide-body">
+      <details class="guide-topic" open>
+        <summary>1. 配置 DeepSeek 或 MiniMax</summary>
+        <ol>
+          <li>先在对应服务商的开放平台创建 API Key。DeepSeek 的密钥不能用于 MiniMax，反之亦然。</li>
+          <li>打开顶部的「模型与插件设置」，选择预设（默认是 DeepSeek），粘贴 API Key。首次配置时保持预填的 Base URL 和模型名即可。</li>
+          <li>可先点「测试连接」，再点「保存模型」。返回聊天，新建或选择一个角色即可开始。</li>
+        </ol>
+        <p>对话需要将角色设定与必要的聊天上下文发送给选定的模型服务。</p>
+        <button class="btn btn-primary" id="help-settings" type="button" aria-haspopup="dialog">前往模型设置</button>
+      </details>
+      <details class="guide-topic">
+        <summary>2. 开关插件与故障恢复</summary>
+        <p>打开设置的「插件」区，按需启用或停用。列表会显示运行状态，以及插件接管或隐藏的默认功能。插件与 Write 在本机同进程运行，请只启用信任的代码。</p>
+        <p>若插件导致启动或页面异常，先关闭服务，再在项目目录运行对应启动脚本进入安全模式（便携版也支持）：</p>
+        <ul>
+          <li>Windows PowerShell：<code>.\start.bat --safe-mode</code></li>
+          <li>macOS / Linux：<code>sh ./start.sh --safe-mode</code></li>
+        </ul>
+        <p>回到设置停用有问题的插件，再关闭服务并正常启动。启动时设置环境变量 <code>SAFE_MODE=1</code> 也有同样效果；恢复后记得清除该变量。</p>
+      </details>
+      <details class="guide-topic">
+        <summary>3. 找到和备份本地存档</summary>
+        <p>默认存在 Write 项目根目录的 <code>data/</code>。如果你设置过 <code>DATA_DIR</code>，则以指定目录为准。</p>
+        <p>停止 Write 后，把整个存档目录复制到安全位置。恢复时也应先停止服务。备份可能包含聊天与 <code>secrets.json</code> 中的密钥，请不要公开分享或上传给 AI。</p>
+      </details>
+      <details class="guide-topic">
+        <summary>4. 导入外部角色卡</summary>
+        <ol>
+          <li>在「模型与插件设置」启用 <code>card-importer</code>，再点顶部的「导入角色卡」。</li>
+          <li>选择 SillyTavern / Character Card V2 的 JSON 卡，或带角色数据的 PNG 卡。普通 PNG 图片不含可导入角色。</li>
+          <li>检查预览中的名字、人设和开场白，再确认创建本地角色。导入不会执行卡片内容，也不会覆盖已有角色。</li>
+        </ol>
+      </details>
+      <details class="guide-topic">
+        <summary>5. 用 AI 配置其他模型或编写插件</summary>
+        <p>可让 AI 先阅读项目里的 <code>AGENTS.md</code> 和 <code>docs/plugin-dev.md</code>，再参考 <code>agent-openai-compat</code> 或现有 CLI 插件填写配置、实现适配器。API Key 用环境变量，不要粘进提示词。</p>
+        <p>编写扩展时可从 <code>plugins/_template/</code> 复制模板，确认权限和插槽，只在审查代码后加入 <code>DATA_DIR/plugins.json</code> 白名单。运行 <code>npm run check</code> 和 <code>npm test</code> 验证。</p>
+      </details>
+    </div>
+  </dialog>
   <dialog class="modal-dialog app-dialog" id="character-dialog" aria-labelledby="dialog-title">
     <form id="profile-form">
       <header class="modal-header"><h2 class="modal-title" id="dialog-title">新建角色</h2><button class="btn-icon" id="close-profile" type="button" aria-label="关闭角色窗口">×</button></header>
