@@ -10,7 +10,7 @@
 
 ## 快速开始
 
-1. **便携版**：若有对应发行件，从 [GitHub Releases](https://github.com/youxianquqi/yangzhi-mao/releases) 下载与你的系统和芯片架构匹配的压缩包，完整解压。**源码版**：先从 [Node.js 官网](https://nodejs.org/zh-cn/download) 安装 Node.js 22 或更新版本。
+1. **便携版**：Windows 用户可直接到 [GitHub Releases](https://github.com/youxianquqi/yangzhi-mao/releases) 下载 `Write-*-win32-x64.zip`，解压后双击 `start.bat` 即可运行（无需安装 Node.js）。其他系统若有对应发行件，也可从 Releases 下载与你的系统和芯片架构匹配的压缩包，完整解压。**源码版**：先从 [Node.js 官网](https://nodejs.org/zh-cn/download) 安装 Node.js 22 或更新版本。
 2. Windows 双击 `start.bat`，macOS 双击 `start.command`，Linux 运行 `./start.sh`。服务就绪后自动打开 [http://127.0.0.1:3210](http://127.0.0.1:3210)。若没有自动打开，可手动访问终端显示的地址。关闭启动窗口即停止服务。
 3. 在网页顶部「模型与插件设置」选择 DeepSeek（默认）或 MiniMax，粘贴服务商的 API Key，测试并保存。已设置对应官方端点的 `DEEPSEEK_API_KEY` 或 `MINIMAX_API_KEY` 时，环境变量优先。然后新建角色，或在同一设置页开启 `card-importer` 后从顶栏导入 PNG／JSON 角色卡。顶部「?」有完整教程。
 

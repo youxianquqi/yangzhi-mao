@@ -1,7 +1,7 @@
 // A real settings/role/thread/plugin integration using a local, credential-free model mock.
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -65,4 +65,39 @@ test('默认线保留旧角色笔记；两条线独立，DeepSeek / MiniMax 每�
         assert.match(upstream.at(-1), /旧角色线索/);
         assert.doesNotMatch(upstream.at(-1), /更新线索/);
     }
+});
+
+test('PUT thread-notes 校验剧情线存在性，拒绝向不存在的随机 UUID 写入孤立文件', async t => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'write-orphan-clues-'));
+    t.after(() => rm(dataDir, { recursive: true, force: true }));
+    await writeFile(join(dataDir, 'plugins.json'), JSON.stringify({ plugins: { 'story-clues': { enabled: true } } }));
+    const { app, kernel } = await createRuntime({
+        dataDir, env: {}, logger: { error() {} },
+    });
+    const server = app.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    t.after(async () => {
+        await new Promise(resolve => {
+            server.close(resolve);
+            server.closeAllConnections();
+        });
+        await kernel.dispose();
+    });
+    const origin = 'http://127.0.0.1:' + server.address().port;
+    const fakeThreadId = '00000000-0000-0000-0000-000000000000';
+    const fakeRoute = origin + '/api/plugins/story-clues/thread-notes/' + fakeThreadId;
+
+    const res = await fetch(fakeRoute, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clues: ['虚构线索'], summary: '幽灵剧情线' }),
+    });
+    assert.equal(res.status, 404);
+    const body = await res.json();
+    assert.equal(body.code, 'THREAD_NOT_FOUND');
+
+    // 确认未向存储目录落盘孤立文件
+    const pluginStoreDir = join(dataDir, 'plugins', 'story-clues');
+    const files = await readdir(pluginStoreDir).catch(() => []);
+    assert.equal(files.includes('thread-' + fakeThreadId + '.json'), false);
 });

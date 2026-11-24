@@ -55,7 +55,7 @@ const routeTimeoutMs = 10_000;
  * @property {<K extends keyof Services>(name:K) => Services[K]} inject
  * @property {<K extends keyof PluginEvents>(event:K, handler:(data:Readonly<PluginEvents[K]>) => K extends 'beforePrompt' ? JsonValue|void|Promise<JsonValue|void> : void|Promise<void>) => void} on
  * @property {{namespace:(pluginId:string)=>NamespaceStore}} storage
- * @property {{readCharacterField:(id:string, field:string)=>Promise<unknown>}} migration
+ * @property {{readCharacterField:(id:string, field:string)=>Promise<unknown>, hasTimeline:(id:string)=>Promise<boolean>}} migration
  * @property {{registerSlot:(slot:SlotName, descriptor:SlotDescriptor)=>void}} ui
  * @property {{register:(method:RouteMethod, resource:string, handler:RouteHandler)=>void}} routes
  * @property {(fn:Cleanup) => void} onDispose
@@ -445,6 +445,11 @@ function context(scope, inject, tagInUse) {
                 ensure('migrate');
                 return inject('storage').readLegacyField(id, field);
             },
+            hasTimeline(id) {
+                ensure('migrate');
+                const store = inject('storage');
+                return store.hasTimeline ? store.hasTimeline(id) : Promise.resolve(false);
+            },
         }),
         ui: Object.freeze({
             registerSlot(slot, descriptor) {
@@ -539,7 +544,8 @@ function validService(name, value) {
     const { characters, threads, archive } = value;
     return isRecordStore(characters) && (threads === undefined || isRecordStore(threads))
         && (archive === undefined || (isObject(archive) && typeof archive.read === 'function'))
-        && typeof value.namespace === 'function' && typeof value.readLegacyField === 'function';
+        && typeof value.namespace === 'function' && typeof value.readLegacyField === 'function'
+        && (value.hasTimeline === undefined || typeof value.hasTimeline === 'function');
 }
 
 /** @param {unknown} value */

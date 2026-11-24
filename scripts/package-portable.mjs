@@ -1,5 +1,7 @@
 // Build with trusted official Node binaries and npm ci's already-installed lockfile dependencies.
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,21 +10,23 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const platforms = new Set(['win32', 'darwin', 'linux']);
 const architectures = new Set(['x64', 'arm64']);
 const builtins = ['_template', 'agent-antigravity', 'agent-openai-compat', 'card-importer', 'persona-guard', 'story-clues'];
-const usage = '用法：node scripts/package-portable.mjs --runtime <官方 Node.js 解压目录> --out <产物目录>'
+export const usage = '用法：node scripts/package-portable.mjs --runtime <官方 Node.js 解压目录> --out <产物目录>'
     + ' [--platform win32|darwin|linux] [--arch x64|arm64]';
 
-try {
-    if (process.argv.length === 3 && process.argv[2] === '--help') {
-        console.log(usage);
-    } else {
-        await main(process.argv.slice(2));
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+    try {
+        if (process.argv.length === 3 && process.argv[2] === '--help') {
+            console.log(usage);
+        } else {
+            await main(process.argv.slice(2));
+        }
+    } catch (error) {
+        console.error('便携版打包失败：' + error.message);
+        process.exitCode = 1;
     }
-} catch (error) {
-    console.error('便携版打包失败：' + error.message);
-    process.exitCode = 1;
 }
 
-async function main(args) {
+export async function main(args) {
     const cli = parseArgs(args);
     const platform = cli.get('--platform') ?? process.platform;
     const arch = cli.get('--arch') ?? process.arch;
@@ -64,22 +68,37 @@ async function main(args) {
         execFileSync(windows ? 'tar.exe' : 'tar', [windows ? '-acf' : '-czf', temporaryArchive, '-C', staging, label], {
             env: { ...process.env, TAR_OPTIONS: '' }, stdio: 'inherit', windowsHide: true, timeout: 120_000,
         });
-        // A complete archive appears at once; an existing release is never overwritten.
+
+        const digest = await computeFileSha256(temporaryArchive);
+        const checksumName = archive + '.sha256';
+        const temporaryChecksum = join(staging, checksumName);
+        await writeFile(temporaryChecksum, `${digest}  ${archive}\n`, { flag: 'wx' });
+
+        // A complete archive and checksum appear together; an existing release is never overwritten.
         const result = join(output, archive);
+        const resultChecksum = join(output, checksumName);
         try {
             await link(temporaryArchive, result);
         } catch (cause) {
             if (cause?.code === 'EEXIST') throw new Error('产物已存在：' + result);
             throw cause;
         }
+        try {
+            await link(temporaryChecksum, resultChecksum);
+        } catch (cause) {
+            await rm(result, { force: true });
+            if (cause?.code === 'EEXIST') throw new Error('产物已存在：' + resultChecksum);
+            throw cause;
+        }
         console.log('便携版已生成：' + result);
+        console.log('校验和已生成：' + resultChecksum);
     } finally {
         // Staging is the exact directory returned by mkdtemp, not a user-provided deletion path.
         await rm(staging, { recursive: true, force: true });
     }
 }
 
-function parseArgs(args) {
+export function parseArgs(args) {
     const cli = new Map();
     const flags = new Set(['--runtime', '--out', '--platform', '--arch']);
     for (let i = 0; i < args.length; i += 2) {
@@ -91,7 +110,7 @@ function parseArgs(args) {
     return cli;
 }
 
-function validateRuntime(binary, platform, arch) {
+export function validateRuntime(binary, platform, arch) {
     const details = execFileSync(binary, ['-p', 'JSON.stringify([process.platform,process.arch,process.versions.node])'], {
         env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' }, encoding: 'utf8', windowsHide: true, timeout: 10_000,
     });
@@ -100,6 +119,16 @@ function validateRuntime(binary, platform, arch) {
         || !/^\d+\.\d+\.\d+/.test(version) || Number(version.split('.')[0]) < 22) {
         throw new Error('指定的运行时须为对应平台和架构的 Node.js 22 或更高版本。');
     }
+}
+
+export async function computeFileSha256(filePath) {
+    return new Promise((resolve, reject) => {
+        const hash = createHash('sha256');
+        const stream = createReadStream(filePath);
+        stream.on('data', chunk => hash.update(chunk));
+        stream.on('end', () => resolve(hash.digest('hex')));
+        stream.on('error', reject);
+    });
 }
 
 async function copyProject(dest) {

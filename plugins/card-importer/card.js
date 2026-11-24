@@ -18,7 +18,7 @@ const uuid = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i;
 /** @typedef {'png'|'json'} Format */
 
 /**
- * Reads Character Card V2 or legacy SillyTavern JSON; never returns non-profile fields.
+ * Reads Character Card V2/V3 or legacy SillyTavern JSON; never returns non-profile fields.
  * @param {Uint8Array} bytes
  * @param {Format} [format] Require the selected file type; otherwise use the PNG signature.
  * @returns {Profile}
@@ -46,7 +46,9 @@ function readCardChunk(bytes) {
     let chunks = 0;
     let imageData = false;
     /** @type {Uint8Array|undefined} */
-    let text;
+    let charaText;
+    /** @type {Uint8Array|undefined} */
+    let ccv3Text;
     while (offset + 12 <= bytes.length && ++chunks <= maxChunks) {
         const size = view.getUint32(offset);
         if (size > bytes.length - offset - 12) throw invalidPng();
@@ -60,15 +62,23 @@ function readCardChunk(bytes) {
             if (type !== 'IHDR' || size !== 13 || !validHeader(view, start)) throw invalidPng();
         } else if (type === 'IHDR') throw invalidPng();
         if (type === 'IDAT' && size) imageData = true;
-        if (type === 'tEXt' && size >= 6 && bytes[start + 5] === 0
-            && String.fromCharCode(...bytes.subarray(start, start + 5)).toLowerCase() === 'chara') {
-            if (text) throw new Error('PNG 含有多个 chara 角色卡字段。');
-            text = bytes.subarray(start + 6, end);
+        if (type === 'tEXt' && size >= 5) {
+            if (size >= 6 && bytes[start + 5] === 0
+                && String.fromCharCode(...bytes.subarray(start, start + 5)).toLowerCase() === 'chara') {
+                if (charaText) throw new Error('PNG 含有多个 chara 角色卡字段。');
+                charaText = bytes.subarray(start + 6, end);
+            } else if (bytes[start + 4] === 0
+                && String.fromCharCode(...bytes.subarray(start, start + 4)).toLowerCase() === 'ccv3') {
+                if (ccv3Text) throw new Error('PNG 含有多个 ccv3 角色卡字段。');
+                ccv3Text = bytes.subarray(start + 5, end);
+            }
         }
         if (type === 'IEND') {
             if (size || end + 4 !== bytes.length || !imageData) throw invalidPng();
-            if (!text) throw new Error('PNG 中没有 chara 角色卡数据，请从原平台导出角色卡。');
-            return decodeBase64(text);
+            const text = ccv3Text ?? charaText;
+            const keyword = ccv3Text ? 'ccv3' : 'chara';
+            if (!text) throw new Error('PNG 中没有 chara 或 ccv3 角色卡数据，请从原平台导出角色卡。');
+            return decodeBase64(text, keyword);
         }
         offset = end + 4;
     }
@@ -95,8 +105,8 @@ function invalidPng() {
     return new Error('PNG 结构损坏或不完整。');
 }
 
-/** @param {Uint8Array} bytes @returns {Uint8Array} */
-function decodeBase64(bytes) {
+/** @param {Uint8Array} bytes @param {string} [keyword] @returns {Uint8Array} */
+function decodeBase64(bytes, keyword = 'chara') {
     if (bytes.length > Math.ceil(CARD_JSON_BYTES / 3) * 4) throw new Error('PNG 内的角色卡数据不能超过 1 MiB。');
     const encoded = new TextDecoder().decode(bytes);
     let binary;
@@ -105,7 +115,7 @@ function decodeBase64(bytes) {
         binary = atob(encoded);
         if (btoa(binary) !== encoded) throw new Error();
     } catch {
-        throw new Error('PNG 内的 chara 字段不是有效的 Base64。');
+        throw new Error('PNG 内的 ' + keyword + ' 字段不是有效的 Base64。');
     }
     if (binary.length > CARD_JSON_BYTES) throw new Error('PNG 内的角色卡数据不能超过 1 MiB。');
     return Uint8Array.from(binary, char => char.charCodeAt(0));
@@ -125,11 +135,16 @@ function extractProfile(value) {
     if (!object(value)) throw new Error('角色卡 JSON 必须是对象。');
     let data = value;
     if (value.spec !== undefined) {
-        if (value.spec !== 'chara_card_v2'
-            || (value.spec_version !== undefined && (typeof value.spec_version !== 'string' || !/^2(?:\.\d+)*$/.test(value.spec_version)))) {
-            throw new Error('仅支持 Character Card V2 和旧版 SillyTavern 角色卡。');
+        const isV2 = value.spec === 'chara_card_v2'
+            && (value.spec_version === undefined || (typeof value.spec_version === 'string' && /^2(?:\.\d+)*$/.test(value.spec_version)));
+        const isV3 = value.spec === 'chara_card_v3'
+            && (value.spec_version === undefined || (typeof value.spec_version === 'string' && /^3(?:\.\d+)*$/.test(value.spec_version)));
+        if (!isV2 && !isV3) {
+            throw new Error('仅支持 Character Card V2、V3 和旧版 SillyTavern 角色卡。');
         }
-        if (!object(value.data)) throw new Error('Character Card V2 缺少有效的 data 对象。');
+        if (!object(value.data)) {
+            throw new Error((value.spec === 'chara_card_v3' ? 'Character Card V3' : 'Character Card V2') + ' 缺少有效的 data 对象。');
+        }
         data = value.data;
     }
     const name = bounded(clean(data.name).replace(/\s+/g, ' '), fieldLimits.name);

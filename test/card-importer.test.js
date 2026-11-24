@@ -42,14 +42,61 @@ test('导入结果符合角色字段上限，截断不损坏 Unicode 字符', ()
     assert.ok(imported.greeting.startsWith('\ufffd'));
 });
 
-test('PNG CRC 正确时可读取 chara，不解码像素或导入 ccv3 及其他附带内容', () => {
-    const otherCard = chunk('tEXt', Buffer.concat([Buffer.from('ccv3\0'), json({ spec: 'chara_card_v3' })]));
-    const source = makePng(otherCard, textChunk(json(card).toString('base64'), 'Chara'));
-    // A slice may start at a nonzero underlying buffer offset.
+test('PNG CRC 正确时支持 chara 与 ccv3，优先使用 ccv3，不解码像素', () => {
+    const cardV3 = {
+        spec: 'chara_card_v3',
+        spec_version: '3.0',
+        data: {
+            name: 'V3 侦探猫',
+            description: '来自 V3 规范的角色。',
+            first_mes: '你好，我是 V3！',
+        },
+    };
+    const ccv3Chunk = textChunk(json(cardV3).toString('base64'), 'ccv3');
+    const charaChunk = textChunk(json(card).toString('base64'), 'Chara');
+
+    // 仅含 ccv3 的 PNG
+    const pngV3Only = makePng(ccv3Chunk);
+    assert.deepEqual(parseCharacterCard(pngV3Only, 'png'), {
+        name: 'V3 侦探猫',
+        description: '来自 V3 规范的角色。',
+        greeting: '你好，我是 V3！',
+    });
+
+    // 同时包含 ccv3 与 chara 时，优先采用 ccv3
+    const bothSource = makePng(ccv3Chunk, charaChunk);
+    assert.deepEqual(parseCharacterCard(bothSource, 'png'), {
+        name: 'V3 侦探猫',
+        description: '来自 V3 规范的角色。',
+        greeting: '你好，我是 V3！',
+    });
+
+    // 仅含 chara 的 PNG
+    const source = makePng(charaChunk);
     const padded = Buffer.concat([Buffer.from([0, 0]), source]);
     assert.deepEqual(parseCharacterCard(padded.subarray(2), 'png'), profile);
     assert.throws(() => parseCharacterCard(source, 'json'), /\.png/);
-    assert.throws(() => parseCharacterCard(makePng(otherCard)), /没有 chara/);
+    assert.throws(() => parseCharacterCard(makePng(chunk('tEXt', Buffer.from('other\0data')))), /没有 chara/);
+});
+
+test('支持 Character Card V3 JSON 导入，忽略附带扩展', () => {
+    const v3Json = json({
+        spec: 'chara_card_v3',
+        spec_version: '3.0',
+        data: {
+            name: 'V3 角色',
+            description: '主设定',
+            first_mes: '开场',
+            creator_notes: '不导入',
+            system_prompt: '不导入',
+            extensions: { custom: 'ignore' },
+        },
+    });
+    assert.deepEqual(parseCharacterCard(v3Json, 'json'), {
+        name: 'V3 角色',
+        description: '主设定',
+        greeting: '开场',
+    });
 });
 
 test('拒绝畸形、超限、重复元数据与 CRC 错误的 PNG 文件', () => {
@@ -69,7 +116,9 @@ test('拒绝畸形、超限、重复元数据与 CRC 错误的 PNG 文件', () =
     }
     assert.throws(() => parseCharacterCard(oversized, 'png'), /10 MiB/);
     assert.throws(() => parseCharacterCard(makePng(validChunk, validChunk)), /多个 chara/);
+    assert.throws(() => parseCharacterCard(makePng(textChunk('dGVzdA==', 'ccv3'), textChunk('dGVzdA==', 'ccv3'))), /多个 ccv3/);
     assert.throws(() => parseCharacterCard(makePng(textChunk('%%%%'))), /Base64/);
+    assert.throws(() => parseCharacterCard(makePng(textChunk('%%%%', 'ccv3'))), /Base64/);
     assert.throws(() => parseCharacterCard(makePng(textChunk(Buffer.from([0xc0, 0x80]).toString('base64')))), /UTF-8 JSON/);
     assert.throws(() => parseCharacterCard(makePng(textChunk(Buffer.alloc(CARD_JSON_BYTES + 1).toString('base64')))), /1 MiB/);
 });
@@ -80,8 +129,11 @@ test('拒绝无效 UTF-8、JSON 和缺少必填字段或版本不兼容的卡', 
     for (const invalid of [Buffer.from('{'), Buffer.from([0xc0, 0x80]), Buffer.from('null'), json([])]) {
         assert.throws(() => parseCharacterCard(invalid, 'json'), /JSON/);
     }
-    assert.throws(() => parseCharacterCard(json({ spec: 'chara_card_v3', data: card.data })), /仅支持/);
+    assert.throws(() => parseCharacterCard(json({ spec: 'chara_card_v4', data: card.data })), /仅支持/);
+    assert.throws(() => parseCharacterCard(json({ spec: 'chara_card_v2', spec_version: '3.0', data: card.data })), /仅支持/);
+    assert.throws(() => parseCharacterCard(json({ spec: 'chara_card_v3', spec_version: '2.0', data: card.data })), /仅支持/);
     assert.throws(() => parseCharacterCard(json({ spec: 'chara_card_v2', data: [] })), /data 对象/);
+    assert.throws(() => parseCharacterCard(json({ spec: 'chara_card_v3', data: 'not an object' })), /data 对象/);
     assert.throws(() => parseCharacterCard(json({ name: { object: true }, description: '不应生成角色' })), /角色名称或角色设定/);
     assert.throws(() => parseCharacterCard(json({ name: '缺少设定' })), /角色名称或角色设定/);
 });

@@ -30,7 +30,7 @@ export function apply(ctx) {
 | `provide(name, impl)` / `inject(name)` | `agent` 为 `{id, run}`，run 可带 `.stream`；`storage` 支持角色存储、可选的剧情线子存储、命名空间和旧字段读取。注入和替换敏感槽位须声明相应 `provide:agent` 或 `provide:storage`。最后成功加载的替换生效；卸载回退到前一个实现。可用 `overrides` 显式展示该服务的接管；旧 manifest 中合法的 provide 调用仍兼容。 |
 | `on(event, handler)` | 需 `hooks`。见下表。监听器的错误单独记录，不替换正常结果。 |
 | `storage.namespace(pluginId)` | 需 `storage` 且只能打开自己的 ID。异步 `get(key)`、`set(key,value,signal?)`、`delete(key)`。数据为 JSON；字符串键使用安全短名，不是路径。 |
-| `migration.readCharacterField(id, field)` | 需 `migrate`。只读旧记录的非核心字段，不能读取活跃或未启用的历史。 |
+| `migration.readCharacterField(id, field)` / `migration.hasTimeline(id)` | 需 `migrate`。查询指定剧情线／角色是否存在，或只读旧记录的非核心字段，不能读取活跃或未启用的历史。 |
 | `routes.register(method, resource, handler)` | 需 `routes`。受控路径 `/api/plugins/<pluginId>/<resource>/<role-uuid>`；支持 GET、POST、PUT、DELETE。处理函数接收 `{id,body,signal}`，返回 JSON。与核心共用 Host／Origin 和 JSON 限制，不能挂任意 Express 中间件。 |
 | `ui.registerSlot(slot, {tag,entry,style?})` | 需 `ui` 且 manifest 声明插槽，只公开已注册的同目录 JS 和可选 CSS 文件。 |
 | `onDispose(fn)` / `signal` | 注册逆序清理（也可从 apply 返回清理函数）；卸载时撤销路由、钩子、槽位和服务，scope 的 signal 中止。插件自己的定时器、网络请求等应响应它。 |

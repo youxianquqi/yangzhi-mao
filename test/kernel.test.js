@@ -202,7 +202,7 @@ function setup() {
     const events = [];
     const store = new Map();
     const storage = {
-        characters: {}, readLegacyField: async () => undefined,
+        characters: {}, readLegacyField: async () => undefined, hasTimeline: async () => true,
         namespace(id) {
             if (!store.has(id)) store.set(id, new Map());
             const records = store.get(id);

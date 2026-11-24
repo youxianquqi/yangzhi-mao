@@ -23,11 +23,11 @@ const namespaceFileLimit = 64 * 1024;
 /** @typedef {AgentSession & {id: string, provider: string, inactiveSessions: Record<string, AgentSession>, revisionId?: string}} Conversation */
 /** @typedef {Conversation & {name: string, description: string, greeting: string, updatedAt: string, defaultThreadDeleted?: boolean}} CharacterRecord */
 /** @typedef {Conversation & {name: string, createdAt: string, updatedAt: string}} ThreadRecord */
-/** @typedef {{get: (roleId:string, threadId:string) => Promise<ThreadRecord>, list: (roleId:string) => Promise<ThreadRecord[]>, save: (roleId:string, thread:ThreadRecord, signal?:AbortSignal, changes?:ArchiveChanges) => Promise<ThreadRecord|void>, delete: (roleId:string, threadId:string) => Promise<void>}} ThreadStore */
+/** @typedef {{get: (roleId:string, threadId:string) => Promise<ThreadRecord>, list: (roleId:string) => Promise<ThreadRecord[]>, save: (roleId:string, thread:ThreadRecord, signal?:AbortSignal, changes?:ArchiveChanges) => Promise<ThreadRecord|void>, delete: (roleId:string, threadId:string) => Promise<void>, exists?: (threadId:string) => Promise<boolean>}} ThreadStore */
 /** @typedef {{get: (id: string) => Promise<CharacterRecord>, list: () => Promise<CharacterRecord[]>, save: (record: CharacterRecord, signal?: AbortSignal, changes?:ArchiveChanges) => Promise<CharacterRecord|void>, delete: (id: string) => Promise<void>}} CharacterStore */
 /** @typedef {import('../types/json.js').JsonValue} JsonValue */
 /** @typedef {{get: (key:string) => Promise<unknown>, set: (key:string,value:JsonValue,signal?:AbortSignal) => Promise<void>, delete: (key:string) => Promise<void>}} NamespaceStore */
-/** @typedef {{characters: CharacterStore, threads?: ThreadStore, archive?: ArchiveReader, namespace: (pluginId: string) => NamespaceStore, readLegacyField: (id: string, field: string) => Promise<unknown>}} StorageService */
+/** @typedef {{characters: CharacterStore, threads?: ThreadStore, archive?: ArchiveReader, namespace: (pluginId: string) => NamespaceStore, readLegacyField: (id: string, field: string) => Promise<unknown>, hasTimeline?: (id: string) => Promise<boolean>}} StorageService */
 
 /** @param {unknown} id @returns {string} Canonical UUID for filenames and locks. */
 export function normalizeCharacterId(id) {
@@ -51,6 +51,7 @@ export async function createStorageService(dataDir) {
     const directory = join(dataDir, 'characters');
     await privateDirectory(directory);
     const archive = createArchiveStore(dataDir);
+    const threadStore = createThreadStore(dataDir, archive);
     return {
         archive: { read: archive.read },
         characters: {
@@ -69,7 +70,7 @@ export async function createStorageService(dataDir) {
                 await removeFiles(obsolete);
             },
         },
-        threads: createThreadStore(dataDir, archive),
+        threads: threadStore,
         namespace: pluginId => createNamespace(dataDir, pluginId),
         readLegacyField: async (id, field) => {
             if (typeof field !== 'string' || !/^[a-z][a-zA-Z0-9_-]{0,48}$/.test(field) || coreFields.has(field)) {
@@ -77,6 +78,15 @@ export async function createStorageService(dataDir) {
             }
             const record = await readRecord(directory, id);
             return Object.hasOwn(record, field) ? record[field] : undefined;
+        },
+        hasTimeline: async id => {
+            if (typeof id !== 'string' || !characterIdPattern.test(id)) return false;
+            const key = id.toLowerCase();
+            try {
+                const record = await readRecord(directory, key);
+                if (record) return true;
+            } catch {}
+            return threadStore?.exists ? await threadStore.exists(key) : false;
         },
     };
 }
@@ -203,6 +213,26 @@ function createThreadStore(dataDir, archive) {
             const obsolete = await archive.obsoleteShards(normalizeCharacterId(roleId), key, previous);
             await deleteJson(recordPath(directory, key), true, 'THREAD_NOT_FOUND');
             await removeFiles(obsolete);
+        },
+        exists: async threadId => {
+            if (typeof threadId !== 'string' || !characterIdPattern.test(threadId)) return false;
+            const key = threadId.toLowerCase();
+            try {
+                const roles = await readdir(base);
+                for (const roleId of roles) {
+                    if (!characterIdPattern.test(roleId)) continue;
+                    try {
+                        const stat = await lstat(join(base, roleId, key + recordExtension));
+                        if (stat.isFile()) {
+                            const charStat = await lstat(join(dataDir, 'characters', roleId + recordExtension));
+                            if (charStat.isFile()) return true;
+                        }
+                    } catch {}
+                }
+                return false;
+            } catch {
+                return false;
+            }
         },
     };
 }

@@ -39,6 +39,9 @@ export function apply(ctx, _config) {
     ctx.routes.register('GET', 'thread-notes', ({ id }) => readThreadNotes(id));
     ctx.routes.register('PUT', 'thread-notes', async ({ id, body, signal }) => {
         const value = normalizeNotes(body);
+        const exists = await ctx.migration.hasTimeline(id);
+        if (!exists) throw appError('THREAD_NOT_FOUND');
+        signal.throwIfAborted();
         await notes.set('thread-' + id, value, signal);
         return value;
     });
