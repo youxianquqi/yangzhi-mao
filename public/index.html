@@ -1,54 +1,158 @@
 <!doctype html>
+<!-- MeowTalk provides the visual shell; Write supplies all data and interactions.
+     External scripts and styles preserve the local application's CSP. -->
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Write · 角色对话</title>
+  <title>Write · 角色对话 | 养只猫 · MeowTalk</title>
   <link rel="stylesheet" href="/styles.css">
   <script type="module" src="/app.js"></script>
 </head>
 <body>
-  <div class="layout">
-    <aside class="sidebar" aria-label="角色列表">
-      <div class="brand"><span class="mark" aria-hidden="true">W</span><div><strong>Write</strong><span>本地角色对话</span></div></div>
-      <div class="sidebar-heading"><h2>角色</h2><button id="create" type="button" class="small">＋ 新建</button></div>
-      <ul id="characters" class="characters"></ul>
-      <p class="sidebar-foot"><span aria-hidden="true"></span>Codex CLI · 本机运行</p>
-    </aside>
+  <div class="terminal-root">
+    <header class="brand-ribbon">
+      <div class="ribbon-left">
+        <span class="brand-badge" aria-hidden="true">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 5c.67 0 1.35.09 2 .26 1.78-2 5.03-2.84 6.42-2.26 1.4.58-.42 7-.42 7 .57 1.07 1 2.24 1 3.44C21 17.9 16.97 21 12 21s-9-3.1-9-7.56c0-1.25.5-2.4 1-3.44 0 0-1.89-6.42-.5-7 1.39-.58 4.72.23 6.5 2.23A9.04 9.04 0 0 1 12 5Z"/>
+            <path d="M8.5 14v.5m7-.5v.5m-4.25 1.75h1.5L12 17z"/>
+          </svg>
+        </span>
+        <div class="brand-title-wrap"><span class="brand-title">MEOWTALK · 养只猫</span><span class="brand-sub hide-on-mobile">角色扮演与剧情推理通讯终端</span></div>
+      </div>
+      <div class="ribbon-right">
+        <span class="ribbon-pill hide-on-mobile"><span class="ribbon-dot"></span>LOCAL // 本机频道</span>
+        <button type="button" class="ribbon-icon-btn" id="theme-toggle" title="切换晴空／星夜主题" aria-label="星夜主题" aria-pressed="false">☾</button>
+      </div>
+    </header>
 
-    <main class="chat" aria-labelledby="title">
-      <header class="chat-header">
-        <div><h1 id="title">角色对话</h1><p id="subtitle">选择一个角色，或新建一个。</p></div>
-        <div id="role-actions" class="actions" hidden>
-          <button id="edit" type="button" class="small">编辑角色</button>
-          <button id="reset" type="button" class="small">新开会话</button>
+    <div class="app-shell">
+      <div class="drawer-backdrop" id="drawer-backdrop" aria-hidden="true"></div>
+      <aside class="sidebar" id="sidebar" aria-label="角色通讯录">
+        <div class="sidebar-actions">
+          <div class="sidebar-top-row">
+            <span class="sidebar-kicker">CONTACTS // 通讯录</span>
+            <button type="button" class="btn btn-primary" id="create">＋ 新建角色</button>
+          </div>
+          <div class="search-box">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+            </svg>
+            <input type="search" class="search-input" id="character-search" placeholder="搜索角色名称…" aria-label="搜索角色">
+          </div>
         </div>
-      </header>
+        <div class="character-list" id="characters"></div>
+        <footer class="sidebar-footer"><span class="status-pill"><span class="status-dot"></span>本机对话 · 本地存档</span></footer>
+      </aside>
 
-      <section id="transcript" class="transcript" aria-label="聊天记录"></section>
+      <main class="main-stage" aria-labelledby="title">
+        <header class="topbar">
+          <div class="topbar-left">
+            <button type="button" class="btn-icon mobile-menu-btn" id="mobile-menu" aria-label="打开角色列表" aria-controls="sidebar" aria-expanded="false">☰</button>
+            <span class="avatar" id="header-avatar" aria-hidden="true">猫</span>
+            <div class="active-char-info">
+              <h1 class="active-char-name" id="title">角色对话</h1>
+              <div class="active-char-sub">
+                <span class="panel-title-badge" id="agent-name" hidden></span>
+                <span class="mono-code" id="subtitle">请选择角色</span>
+                <span class="hide-on-mobile" id="turn-count">0 条记录</span>
+              </div>
+            </div>
+          </div>
+          <div class="topbar-right">
+            <button type="button" class="btn btn-secondary" id="edit" disabled>人设</button>
+            <button type="button" class="btn btn-secondary" id="reset" disabled>重置会话</button>
+            <button type="button" class="btn btn-secondary" id="toggle-extensions" aria-controls="extension-sidebar" aria-expanded="false" hidden>扩展</button>
+          </div>
+        </header>
+        <div class="conversation-tools" id="conversation-tools" hidden>
+          <div class="thread-toolbar">
+            <label for="thread-select" class="panel-title-badge">剧情线</label>
+            <select id="thread-select" class="thread-select" aria-label="切换剧情线"></select>
+            <button class="btn btn-secondary" id="thread-create" type="button">＋ 新剧情线</button>
+            <button class="btn btn-secondary" id="thread-delete" type="button">删除剧情线</button>
+          </div>
+          <details class="dossier-card profile-dossier" id="dossier">
+            <summary class="dossier-title">◆ 角色档案</summary>
+            <p class="dossier-body" id="dossier-description"></p>
+          </details>
+        </div>
+        <div class="chat-viewport">
+          <section class="chat-scroll" id="chat-scroll" tabindex="0" aria-label="聊天记录">
+            <div class="chat-older" id="older-controls" hidden>
+              <button class="btn btn-secondary" id="older" type="button">加载更早记录</button>
+            </div>
+            <div class="chat-container" id="transcript"></div>
+          </section>
+          <button type="button" class="btn btn-secondary jump-latest" id="jump-latest" aria-controls="chat-scroll" hidden>↓ 返回最新消息</button>
+        </div>
+        <footer class="composer-wrap">
+          <div class="composer-inner">
+            <form class="composer-box" id="send-form">
+              <textarea id="message" class="composer-textarea" rows="2" maxlength="8000" placeholder="输入回复或剧情行动…" aria-label="输入消息"></textarea>
+              <div class="composer-footer">
+                <div class="composer-hints"><span id="message-count">0 / 8000</span><span>Enter 发送 · Shift + Enter 换行</span></div>
+                <div class="composer-actions">
+                  <button type="button" class="btn btn-secondary stop-reply" id="stop" hidden>■ 停止回复</button>
+                  <button type="submit" class="btn btn-primary" id="send" disabled>发送 ➤</button>
+                </div>
+              </div>
+            </form>
+            <p id="status" class="feedback" role="status"></p>
+          </div>
+        </footer>
+      </main>
 
-      <footer class="composer">
-        <form id="send-form">
-          <label class="sr-only" for="message">消息</label>
-          <textarea id="message" name="message" rows="2" maxlength="8000" placeholder="输入消息…"></textarea>
-          <button id="send" type="submit" class="primary">发送</button>
-        </form>
-        <p id="status" class="status" role="status"></p>
-      </footer>
-    </main>
+      <aside class="extension-sidebar" id="extension-sidebar" aria-label="插件侧栏" hidden></aside>
+    </div>
   </div>
 
-  <dialog id="character-dialog" aria-labelledby="dialog-title">
+  <dialog class="modal-dialog app-dialog" id="character-dialog" aria-labelledby="dialog-title">
     <form id="profile-form">
-      <h2 id="dialog-title">新建角色</h2>
-      <label>角色名称 <input name="name" type="text" maxlength="50" required></label>
-      <label>角色设定 <textarea name="description" rows="5" maxlength="4000" required placeholder="这个角色是谁？会用怎样的语气说话？"></textarea></label>
-      <label>开场白（可选） <textarea name="greeting" rows="2" maxlength="1000"></textarea></label>
-      <p id="dialog-error" class="status error" role="alert"></p>
-      <div class="dialog-actions">
-        <button id="cancel" type="button">取消</button>
-        <button id="save" type="submit" class="primary">保存角色</button>
+      <header class="modal-header"><h2 class="modal-title" id="dialog-title">新建角色</h2><button class="btn-icon" id="close-profile" type="button" aria-label="关闭角色窗口">×</button></header>
+      <div class="modal-body">
+        <label class="form-group">角色名称 <input name="name" class="field-input" maxlength="50" required placeholder="例如：橘座 · 阁楼侦探"></label>
+        <label class="form-group">角色人设与世界观 <textarea name="description" class="form-textarea" rows="5" maxlength="4000" required placeholder="角色性格、说话方式及当前案件背景…"></textarea></label>
+        <label class="form-group">开场白（可选） <textarea name="greeting" class="form-textarea" rows="2" maxlength="1000"></textarea></label>
+        <p id="dialog-error" class="feedback" role="alert"></p>
       </div>
+      <footer class="modal-footer"><div class="modal-footer-right"><button type="button" class="btn btn-secondary" id="cancel">取消</button><button type="submit" class="btn btn-primary" id="save">保存角色</button></div></footer>
+    </form>
+  </dialog>
+  <dialog class="modal-dialog app-dialog reset-dialog" id="reset-dialog" aria-labelledby="reset-title">
+    <form id="reset-form">
+      <header class="modal-header"><h2 class="modal-title" id="reset-title">重置会话？</h2><button class="btn-icon" id="close-reset" type="button" aria-label="关闭重置窗口">×</button></header>
+      <div class="modal-body">这会清除当前剧情线、当前 Agent 的记录和续聊引用，不影响其他剧情线。<p id="reset-error" class="feedback" role="alert"></p></div>
+      <footer class="modal-footer"><div class="modal-footer-right"><button type="button" class="btn btn-secondary" id="cancel-reset">取消</button><button type="submit" class="btn btn-primary" id="confirm-reset">确认重置</button></div></footer>
+    </form>
+  </dialog>
+  <dialog class="modal-dialog app-dialog" id="thread-dialog" aria-labelledby="thread-dialog-title">
+    <form id="thread-form">
+      <header class="modal-header"><h2 class="modal-title" id="thread-dialog-title">新建剧情线</h2></header>
+      <div class="modal-body">
+        <label class="form-group">剧情线名称 <input id="thread-name" class="field-input" maxlength="80" required placeholder="例如：雨夜来客"></label>
+        <p id="thread-error" class="feedback" role="alert"></p>
+      </div>
+      <footer class="modal-footer"><div class="modal-footer-right"><button type="button" class="btn btn-secondary" id="cancel-thread">取消</button><button type="submit" class="btn btn-primary" id="save-thread">创建剧情线</button></div></footer>
+    </form>
+  </dialog>
+  <dialog class="modal-dialog app-dialog" id="message-dialog" aria-labelledby="message-dialog-title">
+    <form id="message-form">
+      <header class="modal-header"><h2 class="modal-title" id="message-dialog-title">编辑消息</h2></header>
+      <div class="modal-body">
+        <label class="form-group">消息内容 <textarea id="edit-text" class="form-textarea" rows="5" required></textarea></label>
+        <p class="feedback">编辑后会用本地记录重新建立模型会话。</p>
+        <p id="message-error" class="feedback" role="alert"></p>
+      </div>
+      <footer class="modal-footer"><div class="modal-footer-right"><button type="button" class="btn btn-secondary" id="cancel-message">取消</button><button type="submit" class="btn btn-primary" id="save-message">保存消息</button></div></footer>
+    </form>
+  </dialog>
+  <dialog class="modal-dialog app-dialog" id="remove-dialog" aria-labelledby="remove-title">
+    <form id="remove-form">
+      <header class="modal-header"><h2 class="modal-title" id="remove-title"></h2></header>
+      <div class="modal-body"><p id="remove-detail"></p><p id="remove-error" class="feedback" role="alert"></p></div>
+      <footer class="modal-footer"><div class="modal-footer-right"><button type="button" class="btn btn-secondary" id="cancel-remove">取消</button><button type="submit" class="btn btn-primary" id="confirm-remove">确认</button></div></footer>
     </form>
   </dialog>
 </body>

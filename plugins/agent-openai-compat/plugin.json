@@ -1,0 +1,10 @@
+{
+  "id": "agent-openai-compat",
+  "name": "OpenAI 兼容模型",
+  "version": "1.0.0",
+  "entry": "index.js",
+  "slots": [],
+  "permissions": [
+    "provide:agent"
+  ]
+}

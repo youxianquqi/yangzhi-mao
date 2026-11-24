@@ -1,0 +1,10 @@
+{
+  "id": "persona-guard",
+  "name": "用户人设与回复边界",
+  "version": "1.0.0",
+  "entry": "index.js",
+  "slots": [],
+  "permissions": [
+    "hooks"
+  ]
+}

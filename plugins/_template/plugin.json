@@ -1,0 +1,10 @@
+{
+  "id": "sample-plugin",
+  "name": "示例插件",
+  "version": "1.0.0",
+  "entry": "index.js",
+  "slots": [],
+  "permissions": [
+    "hooks"
+  ]
+}

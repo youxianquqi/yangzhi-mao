@@ -1,0 +1,10 @@
+{
+  "id": "agent-antigravity",
+  "name": "Antigravity CLI",
+  "version": "1.0.0",
+  "entry": "index.js",
+  "slots": [],
+  "permissions": [
+    "provide:agent"
+  ]
+}

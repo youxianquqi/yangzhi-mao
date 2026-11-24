@@ -1,3 +1,5 @@
+// Covers existing HTTP, session and persistence behavior through loopback requests.
+// Uses temporary storage and a fake Agent so regression tests run offline.
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -110,6 +112,7 @@ test('只存完整回复；忽略工具和中间事件，重启后还能续聊�
     assert.match(failed.body.error, /网络|连接/);
 
     assertError(await send(app, role, '模拟中途结束。密码是什么？'), 502);
+    assertError(await send(app, role, '模拟畸形 JSONL。密码是什么？'), 502, 'AGENT_PROTOCOL');
 
     app = await restart();
     const restored = await app.request(role);
@@ -184,4 +187,16 @@ test('升级后能读取并续聊已有的角色 JSON 存档', async t => {
     assert.equal(next.status, 200, JSON.stringify(next.body));
     assert.equal(next.body.sessionId, legacy.sessionId);
     assert.equal(next.body.messages.length, 4);
+});
+
+test('核心角色 CRUD 无插件可用，删除后不会留下可访问的角色', async t => {
+    const { restart } = await fixture(t);
+    const app = await restart();
+    const role = await createRole(app);
+    const edited = await app.request(role, { method: 'PUT', data: { ...profile, name: '更新后的名字' } });
+    assert.equal(edited.body.name, '更新后的名字');
+    const deletion = await fetch(app.origin + role, { method: 'DELETE', signal: AbortSignal.timeout(5000) });
+    assert.equal(deletion.status, 204);
+    assertError(await app.request(role), 404, 'CHARACTER_NOT_FOUND');
+    assert.deepEqual((await app.request('/api/characters')).body, []);
 });

@@ -1,0 +1,8 @@
+{
+  "id": "story-clues",
+  "name": "剧情线索本",
+  "version": "1.0.0",
+  "entry": "index.js",
+  "slots": ["sidebar"],
+  "permissions": ["storage", "migrate", "routes", "ui", "hooks"]
+}

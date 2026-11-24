@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "NodeNext",
+    "moduleResolution": "nodenext",
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["server.js", "src/**/*.js", "public/**/*.js", "plugins/**/*.js", "types/**/*.d.ts"],
+  "exclude": ["node_modules", "data"]
+}
